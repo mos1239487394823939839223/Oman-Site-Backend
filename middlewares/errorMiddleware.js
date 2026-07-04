@@ -1,14 +1,27 @@
 const ApiError = require('../utils/apiError');
 
+const handleValidationErrorDB = (err) => {
+    const errors = Object.values(err.errors).map((e) => e.message);
+    return new ApiError(`Invalid input data. ${errors.join('. ')}`, 400);
+};
+
+const handleDuplicateFieldsDB = (err) => {
+    const field = Object.keys(err.keyValue || {})[0] || 'field';
+    const value = err.keyValue ? err.keyValue[field] : '';
+    return new ApiError(`Duplicate ${field} value: ${value}. Please use another value.`, 400);
+};
+
 const globaleErrorHandler = (err, req, res, next) => {
     let error = err;
 
-    if (error.name === 'CastError')error = new ApiError(`Invalid ${error.path}: ${error.value}`, 400);
+    if (error.name === 'CastError') error = new ApiError(`Invalid ${error.path}: ${error.value}`, 400);
+    if (error.name === 'ValidationError') error = handleValidationErrorDB(error);
+    if (error.code === 11000) error = handleDuplicateFieldsDB(error);
 
     error.statusCode = error.statusCode || 500;
     error.status = error.status || 'error';
 
-    if (process.env.NODE_ENV === 'development')return sendErrorForDev(error, res);
+    if (process.env.NODE_ENV === 'development') return sendErrorForDev(error, res);
 
     return sendErrorForProd(error, res);
 };

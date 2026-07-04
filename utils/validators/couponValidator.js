@@ -17,6 +17,18 @@ exports.createCouponValidator = [
     check('discount')
         .notEmpty().withMessage('Discount value is required')
         .isFloat({ min: 1, max: 100 }).withMessage('Discount must be between 1 and 100'),
+    check('product')
+        .optional({ nullable: true, checkFalsy: true })
+        .isMongoId().withMessage('Invalid product ID'),
+    check('category')
+        .optional({ nullable: true, checkFalsy: true })
+        .isMongoId().withMessage('Invalid category ID')
+        .custom((value, { req }) => {
+            if (value && req.body.product) {
+                throw new Error('A coupon cannot be scoped to both a product and a category');
+            }
+            return true;
+        }),
     validatorMiddleware
 ];
 
@@ -38,6 +50,18 @@ exports.updateCouponValidator = [
     check('discount')
         .optional()
         .isFloat({ min: 1, max: 100 }).withMessage('Discount must be between 1 and 100'),
+    check('product')
+        .optional({ nullable: true, checkFalsy: true })
+        .isMongoId().withMessage('Invalid product ID'),
+    check('category')
+        .optional({ nullable: true, checkFalsy: true })
+        .isMongoId().withMessage('Invalid category ID')
+        .custom((value, { req }) => {
+            if (value && req.body.product) {
+                throw new Error('A coupon cannot be scoped to both a product and a category');
+            }
+            return true;
+        }),
     validatorMiddleware
 ];
 

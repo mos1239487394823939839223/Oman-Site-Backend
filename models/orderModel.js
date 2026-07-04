@@ -1,5 +1,5 @@
-const e = require('express');
 const mongoose = require('mongoose');
+const { ORDER_STATUS_VALUES } = require('../utils/orderStatuses');
 
 const orderSchema = new mongoose.Schema({
     user:{
@@ -60,6 +60,14 @@ const orderSchema = new mongoose.Schema({
         default: false
     },
     isDeliveredAt:{
+        type: Date
+    },
+    status: {
+        type: String,
+        enum: ORDER_STATUS_VALUES,
+        default: 'pending'
+    },
+    statusUpdatedAt: {
         type: Date
     }
 
