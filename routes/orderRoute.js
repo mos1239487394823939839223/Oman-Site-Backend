@@ -28,7 +28,7 @@ router.get(
     filterOrderForLoggedUser,
     getAllOrders
 );
-router.route('/:cartId').post(authService.allowedTo(['user','admin','manager']), createCashOrder);
+router.route('/:cartId').post(authService.allowedTo(['user']), createCashOrder);
 router.put(
     '/:id/status',
     authService.allowedTo(['admin', 'manager']),
