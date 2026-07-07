@@ -13,21 +13,7 @@ const brandSchema = new mongoose.Schema({
         type : String,
         lowercase : true
     },
-    image : {
-        type : String,    }
 }, {timestamps : true});
-
-
-const setImageURL = (doc) => {
-    if(doc.image){
-        const imageURL = `${process.env.BASE_URL}/brands/${doc.image}`;
-        doc.image = imageURL;
-    }
-};
-// findOne , findAll , findById => post init
-brandSchema.post('init', (doc)=>{setImageURL(doc)});
-// save => post save
-brandSchema.post('save', (doc)=>{setImageURL(doc)});
 
 // 2- create a model
 const BrandModel = mongoose.model('Brand',brandSchema);
