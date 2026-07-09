@@ -15,9 +15,9 @@ const resizeCategoryImage =asynchandler(async (req,res,next)=>{
     if(req.file){
         await sharp(req.file.buffer)
         // contain (no crop) + white padding so the whole image fits the card
-        .resize(800, 800, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
+        .resize(1200, 1200, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
         .toFormat('jpeg')
-        .jpeg({quality:90})
+        .jpeg({quality:92})
         .toFile(`uploads/categories/${filename}`);
         req.body.image = filename;
 

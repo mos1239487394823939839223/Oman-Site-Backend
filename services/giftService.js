@@ -32,7 +32,7 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
   if (req.files.imageCover) {
     const imageCoverFilename = `gift-${uuidv4()}-${Date.now()}-cover.jpeg`;
     await sharp(req.files.imageCover[0].buffer)
-      .resize(1200, 900, { fit: "contain", background: WHITE_BG })
+      .resize(2000, 1500, { fit: "contain", background: WHITE_BG })
       .toFormat("jpeg")
       .jpeg({ quality: 95 })
       .toFile(`uploads/gifts/${imageCoverFilename}`);
@@ -45,9 +45,9 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
       req.files.images.map(async (file, index) => {
         const filename = `gift-${uuidv4()}-${Date.now()}-${index + 1}.jpeg`;
         await sharp(file.buffer)
-          .resize(800, 800, { fit: "contain", background: WHITE_BG })
+          .resize(1400, 1400, { fit: "contain", background: WHITE_BG })
           .toFormat("jpeg")
-          .jpeg({ quality: 90 })
+          .jpeg({ quality: 92 })
           .toFile(`uploads/gifts/${filename}`);
         req.body.images.push(filename);
       })
