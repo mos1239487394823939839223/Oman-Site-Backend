@@ -20,7 +20,8 @@ const resizeSubCategoryImage = asyncHandler(async (req, res, next) => {
         }
         const filename = `subcategory-${uuidv4()}-${Date.now()}.jpeg`;
         await sharp(req.file.buffer)
-            .resize(600, 600)
+            // contain (no crop) + white padding so the whole image fits the card
+            .resize(800, 800, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
             .toFormat('jpeg')
             .jpeg({ quality: 90 })
             .toFile(`${dir}/${filename}`);

@@ -11,6 +11,12 @@ const {uploadMixOfImages} = require('../middlewares/uploadImageMiddleware');
         { name: 'images', maxCount: 5 }
     ]);
 
+// Fit the whole image inside the target box (no cropping) and pad any gap with
+// white — JPEG has no transparency, so the padding flattens to a clean white.
+const WHITE_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+const COVER_FIT = { fit: 'contain', background: WHITE_BG }; // 4:3 to match the product cards
+const SQUARE_FIT = { fit: 'contain', background: WHITE_BG };
+
 const resizeProductImages = asynchandler(async (req, res, next) => {
     if (!req.files) {
         return next();
@@ -19,7 +25,7 @@ const resizeProductImages = asynchandler(async (req, res, next) => {
     if (req.files.imageCover) {
         const imageCoverFilename = `product-${uuidv4()}-${Date.now()}-cover.jpeg`;
         await sharp(req.files.imageCover[0].buffer)
-            .resize(2000, 1333)
+            .resize(1200, 900, COVER_FIT)
             .toFormat('jpeg')
             .jpeg({ quality: 95 })
             .toFile(`uploads/products/${imageCoverFilename}`);
@@ -32,9 +38,9 @@ const resizeProductImages = asynchandler(async (req, res, next) => {
             req.files.images.map(async (file, index) => {
                 const filename = `product-${uuidv4()}-${Date.now()}-${index + 1}.jpeg`;
                 await sharp(file.buffer)
-                    .resize(600, 600)
+                    .resize(800, 800, SQUARE_FIT)
                     .toFormat('jpeg')
-                    .jpeg({ quality: 90 })
+                    .jpeg({ quality: 95 })
                     .toFile(`uploads/products/${filename}`);
                 req.body.images.push(filename);
             })

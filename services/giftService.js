@@ -26,10 +26,13 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
 
   ensureGiftUploadDir();
 
+  // contain (no crop) + white padding so the whole image fits the card
+  const WHITE_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+
   if (req.files.imageCover) {
     const imageCoverFilename = `gift-${uuidv4()}-${Date.now()}-cover.jpeg`;
     await sharp(req.files.imageCover[0].buffer)
-      .resize(2000, 1333)
+      .resize(1200, 900, { fit: "contain", background: WHITE_BG })
       .toFormat("jpeg")
       .jpeg({ quality: 95 })
       .toFile(`uploads/gifts/${imageCoverFilename}`);
@@ -42,7 +45,7 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
       req.files.images.map(async (file, index) => {
         const filename = `gift-${uuidv4()}-${Date.now()}-${index + 1}.jpeg`;
         await sharp(file.buffer)
-          .resize(600, 600)
+          .resize(800, 800, { fit: "contain", background: WHITE_BG })
           .toFormat("jpeg")
           .jpeg({ quality: 90 })
           .toFile(`uploads/gifts/${filename}`);
