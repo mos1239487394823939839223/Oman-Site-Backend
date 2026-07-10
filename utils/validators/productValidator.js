@@ -45,7 +45,9 @@ exports.createProductValidator = [
         .optional()
         .isFloat({ min: 0 })
         .withMessage('Price after discount must be a number greater than or equal to 0')
-        .custom((value, { req }) => value < req.body.price)
+        // Compare as numbers — multipart form fields arrive as strings, so a raw
+        // "<" would compare lexically (e.g. "90" < "100" is false).
+        .custom((value, { req }) => Number(value) < Number(req.body.price))
         .withMessage('Price after discount must be less than price'),
     check('quantity')
         .notEmpty()
@@ -150,7 +152,12 @@ exports.updateProductValidator = [
         .optional()
         .isFloat({ min: 0 })
         .withMessage('Price after discount must be a number greater than or equal to 0')
-        .custom((value, { req }) => (req.body.price ? value < req.body.price : true))
+        // Only compare when price is part of this update; compare as numbers since
+        // multipart form fields arrive as strings ("90" < "100" is false lexically).
+        // If price isn't in the payload, the model validator checks against the
+        // existing price on save.
+        .custom((value, { req }) =>
+            (req.body.price !== undefined && req.body.price !== '' ? Number(value) < Number(req.body.price) : true))
         .withMessage('Price after discount must be less than price'),
     check('quantity')
         .optional()
