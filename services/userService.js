@@ -62,10 +62,17 @@ const getUserById = factory.getOne(UserModel);
 const updateUser = asynchandler(async (req,res,next)=>{
     const id = req.params.id;
     const updateData = buildUserUpdateData(req.body);
+    // This handler is restricted to admin/manager (see userRoute), so allow
+    // changing the role here. It is intentionally NOT part of the shared
+    // buildUserUpdateData helper, which also serves updateMyData — otherwise a
+    // regular user could escalate their own role.
+    if (req.body.role !== undefined) {
+        updateData.role = req.body.role;
+    }
     const document = await UserModel.findByIdAndUpdate(
         id,
         updateData,
-        {new:true}
+        {new:true, runValidators:true}
     );
     if(!document){
         return next(new ApiError('User not found', 404));

@@ -16,17 +16,29 @@ exports.createUserValidator = [
     }),
 
 
-    check('passwordConfirm')
-    .notEmpty()
-    .withMessage('Password confirmation is required'),
-    
+    check('email')
+        .notEmpty()
+        .withMessage('User email is required')
+        .isEmail()
+        .withMessage('Invalid email address')
+        .custom(async (value) => {
+            const user = await UserModel.findOne({ email: value });
+            if (user) {
+                throw new Error('Email already in use');
+            }
+            return true;
+        }),
+
+    // passwordConfirm is optional; when provided it must match the password.
+    check('passwordConfirm').optional(),
+
     check('password')
     .notEmpty()
     .withMessage('User password is required')
     .isLength({ min: 6 , max: 128 })
     .withMessage('User password must be between 6 and 128 characters long')
     .custom((value,{req})=>{
-        if(value !== req.body.passwordConfirm){
+        if(req.body.passwordConfirm !== undefined && value !== req.body.passwordConfirm){
             throw new Error('Password confirmation does not match password');
         }
         return true;
@@ -36,8 +48,12 @@ exports.createUserValidator = [
         }
         return true;
     }),
+    check('role')
+        .optional()
+        .isIn(['user', 'admin', 'manager'])
+        .withMessage('Role must be one of: user, manager, admin'),
     check('profileImage').optional(),
-    check('phone').isMobilePhone('any').withMessage('Invalid phone number').optional(),
+    check('phone').optional({ checkFalsy: true }).isMobilePhone('any').withMessage('Invalid phone number'),
     validatorMiddleware
 ];
 
@@ -51,18 +67,22 @@ exports.updateUserValidator = [
         req.body.slug = slugify(value);
         return true;
     }),
-    check('email').optional().notEmpty().withMessage('User email cannot be empty').isEmail().withMessage('Invalid email address').custom(async (value)=>{
+    check('email').optional().notEmpty().withMessage('User email cannot be empty').isEmail().withMessage('Invalid email address').custom(async (value, { req })=>{
         const user = await UserModel.findOne({email:value});
-        if(user){
+        if(user && user._id.toString() !== req.params.id){
             throw new Error('Email already in use');
         }
         return true;
     }),
+    check('role')
+        .optional()
+        .isIn(['user', 'admin', 'manager'])
+        .withMessage('Role must be one of: user, manager, admin'),
         check('profileImage').optional(),
-    check('phone').isMobilePhone('any').withMessage('Invalid phone number').optional(),
+    check('phone').optional({ checkFalsy: true }).isMobilePhone('any').withMessage('Invalid phone number'),
 
     validatorMiddleware
-]; 
+];
 
 exports.getUserValidator = [
     check('id')
@@ -143,7 +163,7 @@ exports.updateLoggedUserDataValidator = [
         return true;
     }),
         check('profileImage').optional(),
-    check('phone').isMobilePhone('any').withMessage('Invalid phone number').optional(),
+    check('phone').optional({ checkFalsy: true }).isMobilePhone('any').withMessage('Invalid phone number'),
 
     validatorMiddleware
 ];
