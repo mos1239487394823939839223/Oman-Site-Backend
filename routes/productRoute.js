@@ -9,7 +9,8 @@ const {
 	updateProduct,
 	deleteProduct,
 	uploadProductImages,
-	resizeProductImages
+	resizeProductImages,
+	parseProductPrices
 } = require('../services/productService');
 
 const {
@@ -27,13 +28,13 @@ router.use('/:productId/reviews', reviewRoute);
 
 router
 	.route('/')
-	.post(authService.protect, authService.allowedTo(['admin','manager']), uploadProductImages, resizeProductImages, createProductValidator, createProduct)
+	.post(authService.protect, authService.allowedTo(['admin','manager']), uploadProductImages, resizeProductImages, parseProductPrices, createProductValidator, createProduct)
 	.get(getProductsValidator, getProducts);
 
 router
 	.route('/:id')
 	.get(getProductByIdValidator, getProductById)
-	.put(authService.protect, authService.allowedTo(['admin','manager']), uploadProductImages, resizeProductImages, updateProductValidator, updateProduct)
+	.put(authService.protect, authService.allowedTo(['admin','manager']), uploadProductImages, resizeProductImages, parseProductPrices, updateProductValidator, updateProduct)
 	.delete(authService.protect, authService.allowedTo(['admin']), deleteProductValidator, deleteProduct);
 
 module.exports = router;

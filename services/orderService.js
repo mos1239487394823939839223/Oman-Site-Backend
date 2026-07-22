@@ -8,6 +8,7 @@ const Product = require("../models/productModel");
 const Gift = require("../models/giftModel");
 const { ORDER_STATUSES } = require("../utils/orderStatuses");
 const { notifyNewOrder } = require("../config/socket");
+const { toStripeAmount, BASE_CURRENCY } = require("../utils/currencies");
 
 const applyOrderStatus = (order, status) => {
     order.status = status;
@@ -55,7 +56,8 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
     }
 
     const totalPrice = cartPrice + taxPrice + shippingPrice;
-    // 3) Create Order with default payment method cash
+    // 3) Create Order with default payment method cash. The order inherits the
+    //    cart's currency; item prices/totals are already snapshotted in it.
     const order = await Order.create({
         user: req.user._id,
         cartItems: cart.cartItems,
@@ -63,6 +65,7 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
         totalOrderPrice: totalPrice,
         taxPrice,
         shippingPrice,
+        currency: cart.currency || BASE_CURRENCY,
         paymentMethod: "cash"
     });
 
@@ -207,31 +210,35 @@ exports.CheckoutSession = asyncHandler(async (req, res, next) => {
     }
 
 
-    // 3) Create stripe checkout session, and send it as response to frontend
+    // 3) Create stripe checkout session, and send it as response to frontend.
+    //    Prices are already snapshotted in the cart's currency; convert to
+    //    Stripe's smallest unit per currency (OMR is 3-decimal, others 2).
+    const orderCurrency = cart.currency || BASE_CURRENCY;
+    const stripeCurrency = orderCurrency.toLowerCase();
     const session = await stipe.checkout.sessions.create({
         line_items: [
             ...cart.cartItems.map((item) => {
                 if (item.product) {
                     return {
                         price_data: {
-                            currency: "egp",
+                            currency: stripeCurrency,
                             product_data: {
                                 name: item.product.title,
                                 images: [item.product.imageCover]
                             },
-                            unit_amount: item.price * 100
+                            unit_amount: toStripeAmount(item.price, orderCurrency)
                         },
                         quantity: item.quantity
                     };
                 } else if (item.gift) {
                     return {
                         price_data: {
-                            currency: "egp",
+                            currency: stripeCurrency,
                             product_data: {
                                 name: item.gift.title,
                                 images: [item.gift.imageCover]
                             },
-                            unit_amount: item.price * 100
+                            unit_amount: toStripeAmount(item.price, orderCurrency)
                         },
                         quantity: item.quantity
                     };

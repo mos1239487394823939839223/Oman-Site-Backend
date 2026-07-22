@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { SUPPORTED } = require('../utils/currencies');
 
 //1- creayte a schema
 const ProductSchema = new mongoose.Schema({
@@ -34,6 +35,15 @@ const ProductSchema = new mongoose.Schema({
             message:'Price after discount must be less than price'
         }
     },
+    // Per-currency prices. `price`/`priceAfterDiscount` above stay the OMR base
+    // (source of truth for sorting/back-compat); these mirror OMR plus the other
+    // currencies. Missing entries fall back to the base price at read time.
+    prices:[{
+        _id:false,
+        currency:{type:String, enum:SUPPORTED},
+        amount:{type:Number, min:0},
+        amountAfterDiscount:{type:Number}
+    }],
     quantity:{
         type:Number,
         required:[true,'Product quantity is required'],

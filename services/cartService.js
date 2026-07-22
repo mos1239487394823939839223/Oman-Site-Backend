@@ -4,6 +4,13 @@ const ProductModel = require('../models/productModel');
 const GiftModel = require('../models/giftModel');
 const CouponModel = require('../models/couponModel');
 const ApiError = require('../utils/apiError');
+const { priceForCurrency, isSupported, BASE_CURRENCY } = require('../utils/currencies');
+
+/** Effective (discounted if present) unit price of a product in a currency. */
+const unitPriceForCurrency = (product, currency) => {
+    const { amount, amountAfterDiscount } = priceForCurrency(product, currency);
+    return typeof amountAfterDiscount === 'number' ? amountAfterDiscount : amount;
+};
 
 /**
  * Recalculates totalCartPrice from cartItems and clears any applied discount.
@@ -27,8 +34,16 @@ const emptyCartPayload = (userId) => ({
 // @route   POST /api/v1/cart
 // @access  Protected/User
 exports.addProductToCart = asyncHandler(async (req, res, next) => {
-    
+
     const { productId, giftId, color } = req.body;
+
+    let cart = await CartModel.findOne({ user: req.user._id });
+
+    // Determine the cart currency: explicit request → existing cart → base.
+    const requestedCurrency = req.body.currency;
+    const currency = isSupported(requestedCurrency)
+        ? requestedCurrency
+        : (cart && cart.currency) || BASE_CURRENCY;
 
     let cartItemPayload;
     let message = 'Product added to cart successfully';
@@ -47,18 +62,18 @@ exports.addProductToCart = asyncHandler(async (req, res, next) => {
             return next(new ApiError(`No product found for id: ${productId}`, 404));
         }
 
-        const itemPrice = product.priceAfterDiscount || product.price;
+        const itemPrice = unitPriceForCurrency(product, currency);
         cartItemPayload = { product: productId, color, price: itemPrice };
     }
-
-    let cart = await CartModel.findOne({ user: req.user._id });
 
     if (!cart) {
         cart = await CartModel.create({
             user: req.user._id,
+            currency,
             cartItems: [cartItemPayload]
         });
     } else {
+        cart.currency = currency;
         const itemIndex = cart.cartItems.findIndex((item) => {
             if (giftId) {
                 return item.gift && item.gift.toString() === giftId && item.color === color;
@@ -89,7 +104,7 @@ exports.addProductToCart = asyncHandler(async (req, res, next) => {
 // @access  Protected/User
 exports.getLoggedUserCart = asyncHandler(async (req, res, next) => {
     const cart = await CartModel.findOne({ user: req.user._id })
-        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount description' })
+        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount prices description' })
         .populate({ path: 'cartItems.gift', select: 'title imageCover price priceAfterDiscount description' });
 
     if (!cart) {
@@ -177,6 +192,46 @@ exports.updateCartItemQuantity = asyncHandler(async (req, res, next) => {
     });
 });
 
+// @desc    Switch the cart's currency and re-resolve every line
+// @route   PUT /api/v1/cart/currency
+// @access  Protected/User
+exports.setCartCurrency = asyncHandler(async (req, res, next) => {
+    const { currency } = req.body;
+    if (!isSupported(currency)) {
+        return next(new ApiError('Unsupported currency', 400));
+    }
+
+    const cart = await CartModel.findOne({ user: req.user._id }).populate({
+        path: 'cartItems.product',
+        select: 'title imageCover price priceAfterDiscount prices description'
+    });
+
+    if (!cart) {
+        return res.status(200).json({
+            success: true,
+            numOfCartItems: 0,
+            data: emptyCartPayload(req.user._id),
+        });
+    }
+
+    cart.currency = currency;
+    // Re-snapshot each product line in the new currency; gifts stay free.
+    cart.cartItems.forEach((item) => {
+        if (item.product) {
+            item.price = unitPriceForCurrency(item.product, currency);
+        }
+    });
+
+    calcTotalCartPrice(cart);
+    await cart.save();
+
+    res.status(200).json({
+        success: true,
+        numOfCartItems: cart.cartItems.length,
+        data: cart
+    });
+});
+
 // @desc    Apply coupon to logged user cart
 // @route   PUT /api/v1/cart/applyCoupon
 // @access  Protected/User
@@ -191,7 +246,7 @@ exports.applyCoupon = asyncHandler(async (req, res, next) => {
     }
 
     const cart = await CartModel.findOne({ user: req.user._id })
-        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount description category' });
+        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount prices description category' });
 
     if (!cart || cart.cartItems.length === 0) {
         return next(new ApiError('Cart is empty', 400));
@@ -201,11 +256,11 @@ exports.applyCoupon = asyncHandler(async (req, res, next) => {
     const factor = (100 - coupon.discount) / 100;
     const isScoped = Boolean(coupon.product || coupon.category);
 
-    // Original (pre-discount) unit price for a line. Gift lines keep their stored
-    // price; product lines are recomputed from the product so re-applying a coupon
-    // never stacks on top of a previously discounted price.
+    // Original (pre-discount) unit price for a line, in the cart's currency.
+    // Gift lines keep their stored price; product lines are recomputed from the
+    // product so re-applying a coupon never stacks on a previously discounted price.
     const baseUnitPrice = (item) =>
-        item.product ? (item.product.priceAfterDiscount || item.product.price) : item.price;
+        item.product ? unitPriceForCurrency(item.product, cart.currency) : item.price;
 
     // Whether this line falls within the coupon's scope.
     const lineMatches = (item) => {

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { ORDER_STATUS_VALUES } = require('../utils/orderStatuses');
+const { SUPPORTED, BASE_CURRENCY } = require('../utils/currencies');
 
 const orderSchema = new mongoose.Schema({
     user:{
@@ -43,6 +44,12 @@ const orderSchema = new mongoose.Schema({
     totalOrderPrice:{
         type: Number,
         default: 0.0
+    },
+    // Currency all monetary fields on this order are expressed in.
+    currency:{
+        type: String,
+        enum: SUPPORTED,
+        default: BASE_CURRENCY
     },
       paymentMethod:{
         type: String,

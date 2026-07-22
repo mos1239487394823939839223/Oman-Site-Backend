@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const ProductModel = require('../models/productModel');
 const factory = require('./handlersFactory');
 const {uploadMixOfImages} = require('../middlewares/uploadImageMiddleware');
+const { SUPPORTED, BASE_CURRENCY } = require('../utils/currencies');
 
     const uploadProductImages = uploadMixOfImages([
         { name: 'imageCover', maxCount: 1 },
@@ -51,6 +52,61 @@ const resizeProductImages = asynchandler(async (req, res, next) => {
 });
 
 
+
+// Parse the multi-currency `prices` field (sent as a JSON string in the
+// multipart form) into an array, and derive the base OMR `price` /
+// `priceAfterDiscount` from the OMR entry so the base fields stay authoritative
+// (sorting, cart, validators all rely on them). Runs BEFORE the validators.
+const parseProductPrices = (req, res, next) => {
+    let { prices } = req.body;
+    if (prices === undefined) return next();
+
+    if (typeof prices === 'string') {
+        try {
+            prices = JSON.parse(prices);
+        } catch {
+            prices = [];
+        }
+    }
+
+    const clean = (Array.isArray(prices) ? prices : [])
+        .filter((p) => p && SUPPORTED.includes(p.currency) && p.amount !== '' && p.amount != null)
+        .map((p) => {
+            const amount = Number(p.amount);
+            let amountAfterDiscount =
+                p.amountAfterDiscount === '' || p.amountAfterDiscount == null
+                    ? undefined
+                    : Number(p.amountAfterDiscount);
+            // Drop an invalid (>= amount) or non-positive discount rather than reject.
+            if (
+                amountAfterDiscount === undefined ||
+                Number.isNaN(amountAfterDiscount) ||
+                amountAfterDiscount <= 0 ||
+                amountAfterDiscount >= amount
+            ) {
+                amountAfterDiscount = undefined;
+            }
+            return { currency: p.currency, amount, amountAfterDiscount };
+        })
+        .filter((p) => !Number.isNaN(p.amount));
+
+    req.body.prices = clean;
+
+    // Mirror the OMR entry into the base fields the rest of the app reads.
+    const base = clean.find((p) => p.currency === BASE_CURRENCY);
+    if (base) {
+        req.body.price = base.amount;
+        if (base.amountAfterDiscount !== undefined) {
+            req.body.priceAfterDiscount = base.amountAfterDiscount;
+        } else {
+            // No OMR discount — omit the field so the validator's optional()
+            // check skips it (an empty string would fail isFloat).
+            delete req.body.priceAfterDiscount;
+        }
+    }
+
+    next();
+};
 
 // @desc Create a new product
 // @route POST /api/v1/products
@@ -185,5 +241,6 @@ module.exports = {
     updateProduct,
     deleteProduct,
     uploadProductImages,
-    resizeProductImages
+    resizeProductImages,
+    parseProductPrices
 }
