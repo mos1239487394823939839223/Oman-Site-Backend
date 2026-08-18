@@ -18,6 +18,24 @@ const couponSchema = new mongoose.Schema({
         min: [1, 'Discount must be at least 1%'],
         max: [100, 'Discount cannot exceed 100%']
     },
+    // Max number of people (distinct users) that may redeem this coupon.
+    // null / undefined = unlimited.
+    usageLimit: {
+        type: Number,
+        min: [1, 'Usage limit must be at least 1'],
+        default: null
+    },
+    // How many times the coupon has actually been redeemed (an order was placed).
+    usedCount: {
+        type: Number,
+        default: 0
+    },
+    // Users who have already redeemed it — enforces one redemption per person and
+    // gives an accurate "number of people" count.
+    usedBy: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
     // Optional scope. At most one may be set; both null = cart-wide coupon.
     product: {
         type: mongoose.Schema.Types.ObjectId,

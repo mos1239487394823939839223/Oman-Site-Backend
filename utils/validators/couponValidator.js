@@ -17,6 +17,9 @@ exports.createCouponValidator = [
     check('discount')
         .notEmpty().withMessage('Discount value is required')
         .isFloat({ min: 1, max: 100 }).withMessage('Discount must be between 1 and 100'),
+    check('usageLimit')
+        .optional({ nullable: true, checkFalsy: true })
+        .isInt({ min: 1 }).withMessage('Usage limit must be a whole number of at least 1'),
     check('product')
         .optional({ nullable: true, checkFalsy: true })
         .isMongoId().withMessage('Invalid product ID'),
@@ -50,6 +53,9 @@ exports.updateCouponValidator = [
     check('discount')
         .optional()
         .isFloat({ min: 1, max: 100 }).withMessage('Discount must be between 1 and 100'),
+    check('usageLimit')
+        .optional({ nullable: true, checkFalsy: true })
+        .isInt({ min: 1 }).withMessage('Usage limit must be a whole number of at least 1'),
     check('product')
         .optional({ nullable: true, checkFalsy: true })
         .isMongoId().withMessage('Invalid product ID'),

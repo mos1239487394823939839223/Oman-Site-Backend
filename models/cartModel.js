@@ -31,6 +31,13 @@ const cartSchema = new mongoose.Schema({
     totalPriceAfterDiscount: {
         type: Number
     },
+    // The coupon currently applied to this cart (if any). Recorded on apply so
+    // that placing the order can redeem it (increment usage / mark the user).
+    coupon: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Coupon',
+        default: null
+    },
     // The single currency this whole cart is priced in. Item `price` snapshots
     // are stored in this currency; switching it re-resolves every line.
     currency: {

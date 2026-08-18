@@ -245,6 +245,15 @@ exports.applyCoupon = asyncHandler(async (req, res, next) => {
         return next(new ApiError('Invalid or expired coupon code', 400));
     }
 
+    // Usage limits: block if this user already redeemed it, or if the overall
+    // redemption cap (number of people) has been reached.
+    if (coupon.usedBy.some((id) => id.toString() === req.user._id.toString())) {
+        return next(new ApiError('You have already used this coupon', 400));
+    }
+    if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) {
+        return next(new ApiError('This coupon has reached its usage limit', 400));
+    }
+
     const cart = await CartModel.findOne({ user: req.user._id })
         .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount prices description category' });
 
@@ -301,6 +310,9 @@ exports.applyCoupon = asyncHandler(async (req, res, next) => {
         // Cart-wide coupon: discount the whole cart, line prices unchanged.
         cart.totalPriceAfterDiscount = parseFloat((originalTotal * factor).toFixed(2));
     }
+
+    // Remember the applied coupon so order placement can redeem it.
+    cart.coupon = coupon._id;
 
     await cart.save();
 

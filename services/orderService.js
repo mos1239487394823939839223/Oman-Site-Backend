@@ -6,6 +6,7 @@ const Order = require("../models/orderModel");
 const Cart = require("../models/cartModel");
 const Product = require("../models/productModel");
 const Gift = require("../models/giftModel");
+const Coupon = require("../models/couponModel");
 const { ORDER_STATUSES } = require("../utils/orderStatuses");
 const { notifyNewOrder } = require("../config/socket");
 const { toStripeAmount, BASE_CURRENCY } = require("../utils/currencies");
@@ -18,6 +19,27 @@ const applyOrderStatus = (order, status) => {
         order.isDelivered = true;
         if (!order.isDeliveredAt) order.isDeliveredAt = Date.now();
     }
+};
+
+// Redeem a coupon when an order is actually placed: record the user and bump the
+// count, but only if they haven't redeemed it before and the usage limit (number
+// of people) hasn't been reached. The conditional update makes this race-safe.
+const redeemCoupon = async (couponId, userId) => {
+    if (!couponId) return;
+    await Coupon.updateOne(
+        {
+            _id: couponId,
+            usedBy: { $ne: userId },
+            $or: [
+                { usageLimit: null },
+                { $expr: { $lt: ['$usedCount', '$usageLimit'] } }
+            ]
+        },
+        {
+            $addToSet: { usedBy: userId },
+            $inc: { usedCount: 1 }
+        }
+    );
 };
 
 
@@ -96,6 +118,9 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
         if (giftBulkOptions.length > 0) {
             await Gift.bulkWrite(giftBulkOptions, {});
         }
+
+        // Redeem the applied coupon (if any) now that the order is confirmed.
+        await redeemCoupon(cart.coupon, req.user._id);
 
         await Cart.findByIdAndDelete(req.params.cartId);
 
