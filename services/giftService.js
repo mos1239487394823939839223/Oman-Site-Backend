@@ -26,15 +26,20 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
 
   ensureGiftUploadDir();
 
-  // contain (no crop) + white padding so the whole image fits the card
-  const WHITE_BG = { r: 255, g: 255, b: 255, alpha: 1 };
+  // Preserve each image's own aspect ratio (no crop, no padding): bound the
+  // longest side, never upscale. The cards use object-contain so any ratio fits.
+  const MAX_SIDE = 2400;
+  const FIT_OPTS = { fit: "inside", withoutEnlargement: true };
+  // Highest-fidelity JPEG: max quality, full chroma, mozjpeg encoder.
+  const JPEG_OPTS = { quality: 100, chromaSubsampling: "4:4:4", mozjpeg: true };
 
   if (req.files.imageCover) {
     const imageCoverFilename = `gift-${uuidv4()}-${Date.now()}-cover.jpeg`;
     await sharp(req.files.imageCover[0].buffer)
-      .resize(2000, 1500, { fit: "contain", background: WHITE_BG })
+      .rotate() // apply EXIF orientation so phone portraits don't come out sideways/wide
+      .resize(MAX_SIDE, MAX_SIDE, FIT_OPTS)
       .toFormat("jpeg")
-      .jpeg({ quality: 95 })
+      .jpeg(JPEG_OPTS)
       .toFile(`uploads/gifts/${imageCoverFilename}`);
     req.body.imageCover = imageCoverFilename;
   }
@@ -45,9 +50,10 @@ const resizeGiftImages = asyncHandler(async (req, res, next) => {
       req.files.images.map(async (file, index) => {
         const filename = `gift-${uuidv4()}-${Date.now()}-${index + 1}.jpeg`;
         await sharp(file.buffer)
-          .resize(1400, 1400, { fit: "contain", background: WHITE_BG })
+          .rotate() // apply EXIF orientation so phone portraits don't come out sideways/wide
+          .resize(MAX_SIDE, MAX_SIDE, FIT_OPTS)
           .toFormat("jpeg")
-          .jpeg({ quality: 92 })
+          .jpeg(JPEG_OPTS)
           .toFile(`uploads/gifts/${filename}`);
         req.body.images.push(filename);
       })

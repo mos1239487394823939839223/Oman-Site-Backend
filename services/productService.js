@@ -12,11 +12,15 @@ const { SUPPORTED, BASE_CURRENCY } = require('../utils/currencies');
         { name: 'images', maxCount: 5 }
     ]);
 
-// Fit the whole image inside the target box (no cropping) and pad any gap with
-// white — JPEG has no transparency, so the padding flattens to a clean white.
-const WHITE_BG = { r: 255, g: 255, b: 255, alpha: 1 };
-const COVER_FIT = { fit: 'contain', background: WHITE_BG }; // 4:3 to match the product cards
-const SQUARE_FIT = { fit: 'contain', background: WHITE_BG };
+// Keep each image's own aspect ratio — portrait stays portrait, landscape stays
+// landscape. `fit: inside` bounds the longest side to MAX_SIDE without cropping
+// or padding, and `withoutEnlargement` never upscales (which would only add blur,
+// not detail). The cards use object-contain, so they display any ratio cleanly.
+const MAX_SIDE = 2400;
+const FIT_OPTS = { fit: 'inside', withoutEnlargement: true };
+// Highest-fidelity JPEG: max quality, full chroma (no color subsampling),
+// mozjpeg encoder for the best quality-per-byte at this level.
+const JPEG_OPTS = { quality: 100, chromaSubsampling: '4:4:4', mozjpeg: true };
 
 const resizeProductImages = asynchandler(async (req, res, next) => {
     if (!req.files) {
@@ -26,9 +30,10 @@ const resizeProductImages = asynchandler(async (req, res, next) => {
     if (req.files.imageCover) {
         const imageCoverFilename = `product-${uuidv4()}-${Date.now()}-cover.jpeg`;
         await sharp(req.files.imageCover[0].buffer)
-            .resize(2000, 1500, COVER_FIT)
+            .rotate() // apply EXIF orientation so phone portraits don't come out sideways/wide
+            .resize(MAX_SIDE, MAX_SIDE, FIT_OPTS)
             .toFormat('jpeg')
-            .jpeg({ quality: 95 })
+            .jpeg(JPEG_OPTS)
             .toFile(`uploads/products/${imageCoverFilename}`);
         req.body.imageCover = imageCoverFilename;
     }
@@ -39,9 +44,10 @@ const resizeProductImages = asynchandler(async (req, res, next) => {
             req.files.images.map(async (file, index) => {
                 const filename = `product-${uuidv4()}-${Date.now()}-${index + 1}.jpeg`;
                 await sharp(file.buffer)
-                    .resize(1400, 1400, SQUARE_FIT)
+                    .rotate() // apply EXIF orientation so phone portraits don't come out sideways/wide
+                    .resize(MAX_SIDE, MAX_SIDE, FIT_OPTS)
                     .toFormat('jpeg')
-                    .jpeg({ quality: 95 })
+                    .jpeg(JPEG_OPTS)
                     .toFile(`uploads/products/${filename}`);
                 req.body.images.push(filename);
             })
