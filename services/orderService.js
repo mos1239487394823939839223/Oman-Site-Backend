@@ -90,23 +90,36 @@ const placeOrderFromCart = async ({ cart, userId, shippingAddress, paymentMethod
     return order;
 };
 
-// Thawani only settles in OMR, but the cart may be displayed in another currency.
-// Price the card charge from each product's OMR amount and preserve any coupon
-// discount via the (currency-independent) cart discount ratio. Returns the human
-// OMR total and the integer baisa amount Thawani expects.
+// Thawani settles in OMR and expects the amount in baisa (1 OMR = 1000 baisa).
+// For an OMR cart we charge exactly the cart total (same figure cash would use
+// and the customer sees). For a cart displayed in another currency we price from
+// each product's OMR amount, preserving any coupon discount ratio. We send the
+// EXACT baisa — no rounding to 10 (that was a Stripe-only rule) — so fractions
+// (e.g. 1.505 OMR) are charged correctly.
 const computeOmrCharge = (cart) => {
-    let omrSubtotal = 0;
-    for (const item of cart.cartItems) {
-        // Gifts are free (price forced to 0), so they add nothing to the charge.
-        if (item.product) {
-            omrSubtotal += (item.quantity || 1) * effectivePrice(item.product, BASE_CURRENCY);
+    const currency = cart.currency || BASE_CURRENCY;
+    let omrTotal;
+
+    if (currency === BASE_CURRENCY) {
+        omrTotal = typeof cart.totalPriceAfterDiscount === 'number'
+            ? cart.totalPriceAfterDiscount
+            : cart.totalCartPrice;
+    } else {
+        let omrSubtotal = 0;
+        for (const item of cart.cartItems) {
+            // Gifts are free (price forced to 0), so they add nothing.
+            if (item.product) {
+                omrSubtotal += (item.quantity || 1) * effectivePrice(item.product, BASE_CURRENCY);
+            }
         }
+        const factor = (cart.totalCartPrice > 0 && typeof cart.totalPriceAfterDiscount === 'number')
+            ? cart.totalPriceAfterDiscount / cart.totalCartPrice
+            : 1;
+        omrTotal = omrSubtotal * factor;
     }
-    const factor = (cart.totalCartPrice > 0 && typeof cart.totalPriceAfterDiscount === 'number')
-        ? cart.totalPriceAfterDiscount / cart.totalCartPrice
-        : 1;
-    const omrTotal = omrSubtotal * factor;
-    return { omrTotal, omrBaisa: toStripeAmount(omrTotal, BASE_CURRENCY) };
+
+    omrTotal = omrTotal || 0;
+    return { omrTotal, omrBaisa: Math.round(omrTotal * 1000) };
 };
 
 
