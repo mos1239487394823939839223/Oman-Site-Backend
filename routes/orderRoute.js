@@ -9,7 +9,9 @@ const {
     updateOrderToPaid,
     updateOrderStatus,
     getOrderStatuses,
-    CheckoutSession
+    CheckoutSession,
+    createThawaniSession,
+    confirmThawaniPayment
 } = require('../services/orderService');
 const authService = require('../services/authService');
 const { updateOrderStatusValidator } = require('../utils/validators/orderValidator');
@@ -21,6 +23,18 @@ router.get(
     '/checkout-session/:cartId',
     authService.allowedTo(['user']),
     CheckoutSession
+);
+
+// Thawani card payment: start a hosted session, then confirm it once paid.
+router.post(
+    '/thawani/session/:cartId',
+    authService.allowedTo(['user']),
+    createThawaniSession
+);
+router.post(
+    '/thawani/confirm',
+    authService.allowedTo(['user']),
+    confirmThawaniPayment
 );
 router.get(
     '/',

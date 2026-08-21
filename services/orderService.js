@@ -7,9 +7,11 @@ const Cart = require("../models/cartModel");
 const Product = require("../models/productModel");
 const Gift = require("../models/giftModel");
 const Coupon = require("../models/couponModel");
+const Checkout = require("../models/checkoutModel");
+const thawaniService = require("./thawaniService");
 const { ORDER_STATUSES } = require("../utils/orderStatuses");
 const { notifyNewOrder } = require("../config/socket");
-const { toStripeAmount, BASE_CURRENCY } = require("../utils/currencies");
+const { toStripeAmount, effectivePrice, BASE_CURRENCY } = require("../utils/currencies");
 
 const applyOrderStatus = (order, status) => {
     order.status = status;
@@ -40,6 +42,71 @@ const redeemCoupon = async (couponId, userId) => {
             $inc: { usedCount: 1 }
         }
     );
+};
+
+// Create the order from a cart and run all the side effects: decrement stock,
+// redeem the coupon, notify admins, and clear the cart. Shared by the cash and
+// Thawani (card) flows so they stay in lockstep.
+const placeOrderFromCart = async ({ cart, userId, shippingAddress, paymentMethod, isPaid, totalOrderPrice, currency }) => {
+    const order = await Order.create({
+        user: userId,
+        cartItems: cart.cartItems,
+        shippingAddress,
+        totalOrderPrice,
+        taxPrice: 0,
+        shippingPrice: 0,
+        currency,
+        paymentMethod,
+        isPaid: !!isPaid,
+        isPaidAt: isPaid ? Date.now() : undefined,
+        status: isPaid ? 'confirmed' : 'pending',
+        statusUpdatedAt: Date.now(),
+    });
+
+    const productBulkOptions = cart.cartItems
+        .filter((item) => item.product)
+        .map((item) => ({
+            updateOne: {
+                filter: { _id: item.product._id || item.product },
+                update: { $inc: { quantity: -item.quantity, sold: +item.quantity } }
+            }
+        }));
+    const giftBulkOptions = cart.cartItems
+        .filter((item) => item.gift)
+        .map((item) => ({
+            updateOne: {
+                filter: { _id: item.gift._id || item.gift },
+                update: { $inc: { quantity: -item.quantity, sold: +item.quantity } }
+            }
+        }));
+
+    if (productBulkOptions.length > 0) await Product.bulkWrite(productBulkOptions, {});
+    if (giftBulkOptions.length > 0) await Gift.bulkWrite(giftBulkOptions, {});
+
+    await redeemCoupon(cart.coupon, userId);
+    await Cart.findByIdAndDelete(cart._id);
+    notifyNewOrder(order);
+
+    return order;
+};
+
+// Thawani only settles in OMR, but the cart may be displayed in another currency.
+// Price the card charge from each product's OMR amount and preserve any coupon
+// discount via the (currency-independent) cart discount ratio. Returns the human
+// OMR total and the integer baisa amount Thawani expects.
+const computeOmrCharge = (cart) => {
+    let omrSubtotal = 0;
+    for (const item of cart.cartItems) {
+        // Gifts are free (price forced to 0), so they add nothing to the charge.
+        if (item.product) {
+            omrSubtotal += (item.quantity || 1) * effectivePrice(item.product, BASE_CURRENCY);
+        }
+    }
+    const factor = (cart.totalCartPrice > 0 && typeof cart.totalPriceAfterDiscount === 'number')
+        ? cart.totalPriceAfterDiscount / cart.totalCartPrice
+        : 1;
+    const omrTotal = omrSubtotal * factor;
+    return { omrTotal, omrBaisa: toStripeAmount(omrTotal, BASE_CURRENCY) };
 };
 
 
@@ -78,58 +145,154 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
     }
 
     const totalPrice = cartPrice + taxPrice + shippingPrice;
-    // 3) Create Order with default payment method cash. The order inherits the
-    //    cart's currency; item prices/totals are already snapshotted in it.
-    const order = await Order.create({
-        user: req.user._id,
-        cartItems: cart.cartItems,
+    // 3) Create the order (payment method cash). The order inherits the cart's
+    //    currency; item prices/totals are already snapshotted in it. The shared
+    //    helper also decrements stock, redeems the coupon, and clears the cart.
+    const order = await placeOrderFromCart({
+        cart,
+        userId: req.user._id,
         shippingAddress: req.body.shippingAddress,
+        paymentMethod: "cash",
+        isPaid: false,
         totalOrderPrice: totalPrice,
-        taxPrice,
-        shippingPrice,
         currency: cart.currency || BASE_CURRENCY,
-        paymentMethod: "cash"
     });
 
-    // 4) Decrease product quantity, increase sold count
-    if(order){
-        const productBulkOptions = cart.cartItems
-            .filter((item) => item.product)
-            .map((item) => ({
-                updateOne: {
-                    filter: { _id: item.product },
-                    update: { $inc: { quantity: -item.quantity, sold: +item.quantity } }
-                }
-            }));
-
-        const giftBulkOptions = cart.cartItems
-            .filter((item) => item.gift)
-            .map((item) => ({
-                updateOne: {
-                    filter: { _id: item.gift },
-                    update: { $inc: { quantity: -item.quantity, sold: +item.quantity } }
-                }
-            }));
-
-        if (productBulkOptions.length > 0) {
-            await Product.bulkWrite(productBulkOptions, {});
-        }
-
-        if (giftBulkOptions.length > 0) {
-            await Gift.bulkWrite(giftBulkOptions, {});
-        }
-
-        // Redeem the applied coupon (if any) now that the order is confirmed.
-        await redeemCoupon(cart.coupon, req.user._id);
-
-        await Cart.findByIdAndDelete(req.params.cartId);
-
-        // 5) Notify admins in real time about the incoming order
-        notifyNewOrder(order);
-    }
-    // 6) Send order created email with order details to user email
-
     res.status(200).json({ message: "Order created successfully" , debugger: order});
+});
+
+// @desc    Start a Thawani card payment for a cart
+// @route   POST /api/v1/orders/thawani/session/:cartId
+// @access  Protected/User
+// Creates a Thawani checkout session priced in OMR, persists a Checkout record
+// with the data needed to place the order once payment is confirmed, and returns
+// the hosted pay URL the client should redirect to.
+exports.createThawaniSession = asyncHandler(async (req, res, next) => {
+    const cart = await Cart.findById(req.params.cartId)
+        .populate('cartItems.product', 'title price priceAfterDiscount prices');
+    if (!cart) {
+        return next(new ApiError('There is no cart for this id', 404));
+    }
+    if (!cart.cartItems || cart.cartItems.length === 0) {
+        return next(new ApiError('Cart is empty', 400));
+    }
+
+    const { omrTotal, omrBaisa } = computeOmrCharge(cart);
+    // Thawani's minimum payable amount is 100 baisa (0.100 OMR).
+    if (omrBaisa < 100) {
+        return next(new ApiError('Order total is below the minimum payable amount (0.100 OMR)', 400));
+    }
+
+    const clientRef = String(cart._id);
+    const frontend = process.env.FRONTEND_URL || '';
+    const successUrl = `${frontend}/payment/success?ref=${clientRef}`;
+    const cancelUrl = `${frontend}/cart`;
+    const products = [
+        { name: `Order ${clientRef.slice(-8).toUpperCase()}`, quantity: 1, unit_amount: omrBaisa },
+    ];
+
+    const session = await thawaniService.createCheckoutSession({
+        clientReferenceId: clientRef,
+        products,
+        successUrl,
+        cancelUrl,
+        metadata: { cartId: clientRef, userId: String(req.user._id) },
+    });
+
+    // Persist our own record with everything needed to place the order at confirm.
+    await Checkout.findOneAndUpdate(
+        { session_id: session.session_id },
+        {
+            session_id: session.session_id,
+            client_reference_id: clientRef,
+            products,
+            total_amount: omrBaisa,
+            currency: BASE_CURRENCY,
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            payment_status: session.payment_status || 'unpaid',
+            mode: 'payment',
+            metadata: {
+                userId: String(req.user._id),
+                shippingAddress: req.body.shippingAddress || {},
+                omrTotal,
+            },
+            created_at: session.created_at ? new Date(session.created_at) : new Date(),
+            expire_at: session.expire_at ? new Date(session.expire_at) : undefined,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({
+        status: 'success',
+        session_id: session.session_id,
+        payUrl: thawaniService.payUrl(session.session_id),
+    });
+});
+
+// @desc    Confirm a Thawani payment and place the order
+// @route   POST /api/v1/orders/thawani/confirm
+// @access  Protected/User
+// The success page calls this with the checkout ref (cart id) or session_id.
+// It verifies the payment with Thawani and, if paid, places the order once
+// (idempotent on repeat calls / refreshes).
+exports.confirmThawaniPayment = asyncHandler(async (req, res, next) => {
+    const { session_id: sessionId, ref } = req.body;
+
+    const checkout = sessionId
+        ? await Checkout.findOne({ session_id: sessionId })
+        : await Checkout.findOne({ client_reference_id: ref }).sort({ createdAt: -1 });
+    if (!checkout) {
+        return next(new ApiError('Checkout session not found', 404));
+    }
+
+    const meta = checkout.metadata || {};
+    // Only the buyer may confirm their own checkout.
+    if (meta.userId && String(meta.userId) !== String(req.user._id)) {
+        return next(new ApiError('You are not allowed to confirm this payment', 403));
+    }
+
+    // Idempotency: if we already placed the order for this checkout, return it.
+    if (meta.orderId) {
+        const existing = await Order.findById(meta.orderId);
+        if (existing) {
+            return res.status(200).json({ status: 'success', paid: true, data: existing });
+        }
+    }
+
+    // Verify the real status with Thawani.
+    const session = await thawaniService.getCheckoutSession(checkout.session_id);
+    checkout.payment_status = session.payment_status || checkout.payment_status;
+    if (session.invoice) checkout.invoice = session.invoice;
+
+    if (checkout.payment_status !== 'paid') {
+        await checkout.save();
+        return res.status(200).json({ status: 'success', paid: false, payment_status: checkout.payment_status });
+    }
+
+    // Paid. Load the cart and place the order (in OMR — what was actually charged).
+    const cart = await Cart.findById(checkout.client_reference_id);
+    if (!cart) {
+        // Cart already consumed (e.g. a double confirm that raced) — report paid.
+        await checkout.save();
+        return res.status(200).json({ status: 'success', paid: true, data: null, message: 'Payment received' });
+    }
+
+    const order = await placeOrderFromCart({
+        cart,
+        userId: meta.userId || req.user._id,
+        shippingAddress: meta.shippingAddress || {},
+        paymentMethod: 'card',
+        isPaid: true,
+        totalOrderPrice: typeof meta.omrTotal === 'number' ? meta.omrTotal : (checkout.total_amount / 1000),
+        currency: BASE_CURRENCY,
+    });
+
+    checkout.metadata = { ...meta, orderId: String(order._id) };
+    checkout.markModified('metadata');
+    await checkout.save();
+
+    res.status(200).json({ status: 'success', paid: true, data: order });
 });
 
 // @desc Get All orders
