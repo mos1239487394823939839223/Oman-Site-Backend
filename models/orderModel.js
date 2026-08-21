@@ -41,6 +41,17 @@ const orderSchema = new mongoose.Schema({
         type: Number,
         default: 0.0
     },
+    // Gift-wrapping fee, if the customer chose gift wrapping.
+    wrappingPrice:{
+        type: Number,
+        default: 0.0
+    },
+    // How the order is fulfilled: home delivery or pickup from the factory.
+    deliveryMethod:{
+        type: String,
+        enum: ['delivery','pickup'],
+        default: 'delivery'
+    },
     totalOrderPrice:{
         type: Number,
         default: 0.0

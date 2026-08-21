@@ -47,14 +47,16 @@ const redeemCoupon = async (couponId, userId) => {
 // Create the order from a cart and run all the side effects: decrement stock,
 // redeem the coupon, notify admins, and clear the cart. Shared by the cash and
 // Thawani (card) flows so they stay in lockstep.
-const placeOrderFromCart = async ({ cart, userId, shippingAddress, paymentMethod, isPaid, totalOrderPrice, currency }) => {
+const placeOrderFromCart = async ({ cart, userId, shippingAddress, paymentMethod, isPaid, totalOrderPrice, currency, taxPrice = 0, shippingPrice = 0, wrappingPrice = 0, deliveryMethod = 'delivery' }) => {
     const order = await Order.create({
         user: userId,
         cartItems: cart.cartItems,
         shippingAddress,
         totalOrderPrice,
-        taxPrice: 0,
-        shippingPrice: 0,
+        taxPrice,
+        shippingPrice,
+        wrappingPrice,
+        deliveryMethod,
         currency,
         paymentMethod,
         isPaid: !!isPaid,
@@ -90,36 +92,55 @@ const placeOrderFromCart = async ({ cart, userId, shippingAddress, paymentMethod
     return order;
 };
 
-// Thawani settles in OMR and expects the amount in baisa (1 OMR = 1000 baisa).
-// For an OMR cart we charge exactly the cart total (same figure cash would use
-// and the customer sees). For a cart displayed in another currency we price from
-// each product's OMR amount, preserving any coupon discount ratio. We send the
-// EXACT baisa — no rounding to 10 (that was a Stripe-only rule) — so fractions
-// (e.g. 1.505 OMR) are charged correctly.
-const computeOmrCharge = (cart) => {
+// The product subtotal (after any coupon) in OMR. For an OMR cart this is the
+// cart total; for a cart displayed in another currency we price from each
+// product's OMR amount, preserving the coupon discount ratio. This is the ONE
+// figure that is always server-authoritative (never trusts the client).
+const omrSubtotalOf = (cart) => {
     const currency = cart.currency || BASE_CURRENCY;
-    let omrTotal;
-
     if (currency === BASE_CURRENCY) {
-        omrTotal = typeof cart.totalPriceAfterDiscount === 'number'
+        const sub = typeof cart.totalPriceAfterDiscount === 'number'
             ? cart.totalPriceAfterDiscount
             : cart.totalCartPrice;
-    } else {
-        let omrSubtotal = 0;
-        for (const item of cart.cartItems) {
-            // Gifts are free (price forced to 0), so they add nothing.
-            if (item.product) {
-                omrSubtotal += (item.quantity || 1) * effectivePrice(item.product, BASE_CURRENCY);
-            }
-        }
-        const factor = (cart.totalCartPrice > 0 && typeof cart.totalPriceAfterDiscount === 'number')
-            ? cart.totalPriceAfterDiscount / cart.totalCartPrice
-            : 1;
-        omrTotal = omrSubtotal * factor;
+        return sub || 0;
     }
+    let omrSubtotal = 0;
+    for (const item of cart.cartItems) {
+        // Gifts are free (price forced to 0), so they add nothing.
+        if (item.product) {
+            omrSubtotal += (item.quantity || 1) * effectivePrice(item.product, BASE_CURRENCY);
+        }
+    }
+    const factor = (cart.totalCartPrice > 0 && typeof cart.totalPriceAfterDiscount === 'number')
+        ? cart.totalPriceAfterDiscount / cart.totalCartPrice
+        : 1;
+    return omrSubtotal * factor;
+};
 
-    omrTotal = omrTotal || 0;
-    return { omrTotal, omrBaisa: Math.round(omrTotal * 1000) };
+const nonNegative = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+// Full OMR breakdown for an order: server-computed product subtotal PLUS the
+// add-on fees the client shows the customer (tax / shipping / gift wrapping).
+// The fees can only ADD to the price, so a tampered-down fee would only cost the
+// merchant, never overcharge the customer or affect anyone else. Returns human
+// OMR figures plus the exact baisa total (1 OMR = 1000 baisa) Thawani expects.
+const computeOrderTotals = (cart, { taxPrice, shippingPrice, wrappingPrice } = {}) => {
+    const subtotal = omrSubtotalOf(cart);
+    const tax = nonNegative(taxPrice);
+    const shipping = nonNegative(shippingPrice);
+    const wrapping = nonNegative(wrappingPrice);
+    const total = parseFloat((subtotal + tax + shipping + wrapping).toFixed(3));
+    return {
+        subtotal,
+        taxPrice: tax,
+        shippingPrice: shipping,
+        wrappingPrice: wrapping,
+        total,
+        totalBaisa: Math.round(total * 1000),
+    };
 };
 
 
@@ -134,30 +155,25 @@ exports.filterOrderForLoggedUser = asyncHandler(async (req, res, next) => {
 // @ access Private/User
 
 exports.createCashOrder = asyncHandler(async (req, res, next) => {
-    // app settings
-
-    const taxPrice = 0;
-    const shippingPrice = 0;
-
     // 1) Get Cart based on cartId
-
     const cart = await Cart.findById(req.params.cartId);
     if(!cart){
         return next(new ApiError("There is no cart for this id",404));
     }
 
+    // 2) Order total = product subtotal (post-coupon) + the fees the client shows
+    //    (tax / shipping / gift wrapping). Subtotal is server-authoritative.
+    const deliveryMethod = req.body.deliveryMethod === 'pickup' ? 'pickup' : 'delivery';
+    const { total, taxPrice, shippingPrice, wrappingPrice } = computeOrderTotals(cart, {
+        taxPrice: req.body.taxPrice,
+        shippingPrice: req.body.shippingPrice,
+        wrappingPrice: req.body.wrappingPrice,
+    });
 
-    // 2) Calculate Order Price based on cart price + tax + shipping (if there is a copon apply it and use the discounted price);
-    const cartPrice =
-        typeof cart.totalPriceAfterDiscount === "number"
-            ? cart.totalPriceAfterDiscount
-            : cart.totalCartPrice;
-
-    if (typeof cartPrice !== "number" || Number.isNaN(cartPrice)) {
+    if (typeof total !== "number" || Number.isNaN(total)) {
         return next(new ApiError("Cart total price is invalid", 400));
     }
 
-    const totalPrice = cartPrice + taxPrice + shippingPrice;
     // 3) Create the order (payment method cash). The order inherits the cart's
     //    currency; item prices/totals are already snapshotted in it. The shared
     //    helper also decrements stock, redeems the coupon, and clears the cart.
@@ -167,7 +183,11 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
         shippingAddress: req.body.shippingAddress,
         paymentMethod: "cash",
         isPaid: false,
-        totalOrderPrice: totalPrice,
+        taxPrice,
+        shippingPrice,
+        wrappingPrice,
+        deliveryMethod,
+        totalOrderPrice: total,
         currency: cart.currency || BASE_CURRENCY,
     });
 
@@ -190,7 +210,15 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
         return next(new ApiError('Cart is empty', 400));
     }
 
-    const { omrTotal, omrBaisa } = computeOmrCharge(cart);
+    // Charge the full order total — product subtotal + the fees the client shows
+    // (tax / shipping / gift wrapping).
+    const deliveryMethod = req.body.deliveryMethod === 'pickup' ? 'pickup' : 'delivery';
+    const { total: omrTotal, totalBaisa: omrBaisa, taxPrice, shippingPrice, wrappingPrice } =
+        computeOrderTotals(cart, {
+            taxPrice: req.body.taxPrice,
+            shippingPrice: req.body.shippingPrice,
+            wrappingPrice: req.body.wrappingPrice,
+        });
     // Thawani's minimum payable amount is 100 baisa (0.100 OMR).
     if (omrBaisa < 100) {
         return next(new ApiError('Order total is below the minimum payable amount (0.100 OMR)', 400));
@@ -229,6 +257,10 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
                 userId: String(req.user._id),
                 shippingAddress: req.body.shippingAddress || {},
                 omrTotal,
+                taxPrice,
+                shippingPrice,
+                wrappingPrice,
+                deliveryMethod,
             },
             created_at: session.created_at ? new Date(session.created_at) : new Date(),
             expire_at: session.expire_at ? new Date(session.expire_at) : undefined,
@@ -299,6 +331,10 @@ exports.confirmThawaniPayment = asyncHandler(async (req, res, next) => {
         isPaid: true,
         totalOrderPrice: typeof meta.omrTotal === 'number' ? meta.omrTotal : (checkout.total_amount / 1000),
         currency: BASE_CURRENCY,
+        taxPrice: meta.taxPrice || 0,
+        shippingPrice: meta.shippingPrice || 0,
+        wrappingPrice: meta.wrappingPrice || 0,
+        deliveryMethod: meta.deliveryMethod || 'delivery',
     });
 
     checkout.metadata = { ...meta, orderId: String(order._id) };
