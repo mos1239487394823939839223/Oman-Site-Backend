@@ -283,7 +283,9 @@ const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
 
     const result = await ProductModel.updateMany(
         { subCategories: subCategoryId },
-        [{ $set: setStage }]
+        [{ $set: setStage }],
+        // Mongoose 9 requires this flag to accept an aggregation-pipeline update.
+        { updatePipeline: true }
     );
 
     res.status(200).json({
