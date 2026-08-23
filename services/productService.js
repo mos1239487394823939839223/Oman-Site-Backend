@@ -258,9 +258,11 @@ const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
     const clearing = discountPercent === 0;
 
     // Build the per-currency price list, adding/removing amountAfterDiscount.
+    // $ifNull guards products that predate multi-currency and have no `prices`
+    // array — $map throws on a null input.
     const mappedPrices = {
         $map: {
-            input: '$prices',
+            input: { $ifNull: ['$prices', []] },
             as: 'p',
             in: {
                 currency: '$$p.currency',
