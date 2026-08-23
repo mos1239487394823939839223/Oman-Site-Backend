@@ -8,6 +8,7 @@ const {
 	getProductById,
 	updateProduct,
 	deleteProduct,
+	applySubCategoryDiscount,
 	uploadProductImages,
 	resizeProductImages,
 	parseProductPrices
@@ -24,6 +25,14 @@ const {
 const authService = require('../services/authService');
 
 router.use('/:productId/reviews', reviewRoute);
+
+// Apply / clear a percentage discount for every product in a subcategory.
+router.put(
+	'/discount/subcategory/:subCategoryId',
+	authService.protect,
+	authService.allowedTo(['admin', 'manager']),
+	applySubCategoryDiscount
+);
 
 
 router

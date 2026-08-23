@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const ProductModel = require('../models/productModel');
 const factory = require('./handlersFactory');
+const ApiError = require('../utils/apiError');
 const {uploadMixOfImages} = require('../middlewares/uploadImageMiddleware');
 const { SUPPORTED, BASE_CURRENCY } = require('../utils/currencies');
 
@@ -239,6 +240,60 @@ const updateProduct = factory.updateOne(ProductModel);
 
 const deleteProduct =factory.deleteOne(ProductModel);
 
+// @desc   Apply (or clear) a percentage discount to every product in a subcategory
+// @route  PUT /api/v1/products/discount/subcategory/:subCategoryId
+// @access Private/Admin-Manager
+// Body: { discountPercent: 0..100 }. 0 clears the discount. The percentage is
+// applied to the base OMR price AND every per-currency amount, in a single bulk
+// update (aggregation pipeline) so it scales to any number of products.
+const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
+    const { subCategoryId } = req.params;
+    const discountPercent = Number(req.body.discountPercent);
+
+    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent >= 100) {
+        return next(new ApiError('discountPercent must be a number between 0 and 99', 400));
+    }
+
+    const factor = (100 - discountPercent) / 100;
+    const clearing = discountPercent === 0;
+
+    // Build the per-currency price list, adding/removing amountAfterDiscount.
+    const mappedPrices = {
+        $map: {
+            input: '$prices',
+            as: 'p',
+            in: {
+                currency: '$$p.currency',
+                amount: '$$p.amount',
+                amountAfterDiscount: clearing
+                    ? '$$REMOVE'
+                    : { $round: [{ $multiply: ['$$p.amount', factor] }, 3] },
+            },
+        },
+    };
+
+    const setStage = {
+        priceAfterDiscount: clearing
+            ? '$$REMOVE'
+            : { $round: [{ $multiply: ['$price', factor] }, 3] },
+        prices: mappedPrices,
+    };
+
+    const result = await ProductModel.updateMany(
+        { subCategories: subCategoryId },
+        [{ $set: setStage }]
+    );
+
+    res.status(200).json({
+        success: true,
+        message: clearing
+            ? 'Discount cleared for the subcategory'
+            : `${discountPercent}% discount applied to the subcategory`,
+        matched: result.matchedCount,
+        modified: result.modifiedCount,
+    });
+});
+
 
 module.exports = {
     createProduct,
@@ -246,6 +301,7 @@ module.exports = {
     getProductById,
     updateProduct,
     deleteProduct,
+    applySubCategoryDiscount,
     uploadProductImages,
     resizeProductImages,
     parseProductPrices
