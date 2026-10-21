@@ -131,15 +131,20 @@ const shippingPriceFor = async (deliveryMethod) => {
     return typeof settings?.deliveryPrice === 'number' ? settings.deliveryPrice : 2;
 };
 
+const TAX_RATE = 0.05;
+const WRAPPING_PRICE = 5; // OMR
+
 // Full OMR breakdown for an order: server-computed product subtotal PLUS the
 // add-on fees (tax / shipping / gift wrapping). Shipping comes from
-// shippingPriceFor; tax and wrapping are the amounts the client shows. Returns
-// human OMR figures plus the exact baisa total (1 OMR = 1000 baisa) Thawani expects.
+// shippingPriceFor. The client's taxPrice / wrappingPrice only say whether to
+// apply tax / wrapping — they're in the customer's display currency, so the
+// amounts are recomputed here in OMR. Returns human OMR figures plus the exact
+// baisa total (1 OMR = 1000 baisa) Thawani expects.
 const computeOrderTotals = (cart, { taxPrice, shippingPrice, wrappingPrice } = {}) => {
     const subtotal = omrSubtotalOf(cart);
-    const tax = nonNegative(taxPrice);
+    const tax = nonNegative(taxPrice) > 0 ? parseFloat((subtotal * TAX_RATE).toFixed(3)) : 0;
     const shipping = nonNegative(shippingPrice);
-    const wrapping = nonNegative(wrappingPrice);
+    const wrapping = nonNegative(wrappingPrice) > 0 ? WRAPPING_PRICE : 0;
     const total = parseFloat((subtotal + tax + shipping + wrapping).toFixed(3));
     return {
         subtotal,
