@@ -8,6 +8,7 @@ const Product = require("../models/productModel");
 const Gift = require("../models/giftModel");
 const Coupon = require("../models/couponModel");
 const Checkout = require("../models/checkoutModel");
+const Footer = require("../models/footerModel");
 const thawaniService = require("./thawaniService");
 const { ORDER_STATUSES } = require("../utils/orderStatuses");
 const { notifyNewOrder } = require("../config/socket");
@@ -122,11 +123,18 @@ const nonNegative = (v) => {
     return Number.isFinite(n) && n > 0 ? n : 0;
 };
 
+// Delivery fee (OMR) set by the admin in Site Settings. Pickup is free. Read on
+// the server so the customer can't change what they're charged for delivery.
+const shippingPriceFor = async (deliveryMethod) => {
+    if (deliveryMethod === 'pickup') return 0;
+    const settings = await Footer.findOne().select('deliveryPrice').lean();
+    return typeof settings?.deliveryPrice === 'number' ? settings.deliveryPrice : 2;
+};
+
 // Full OMR breakdown for an order: server-computed product subtotal PLUS the
-// add-on fees the client shows the customer (tax / shipping / gift wrapping).
-// The fees can only ADD to the price, so a tampered-down fee would only cost the
-// merchant, never overcharge the customer or affect anyone else. Returns human
-// OMR figures plus the exact baisa total (1 OMR = 1000 baisa) Thawani expects.
+// add-on fees (tax / shipping / gift wrapping). Shipping comes from
+// shippingPriceFor; tax and wrapping are the amounts the client shows. Returns
+// human OMR figures plus the exact baisa total (1 OMR = 1000 baisa) Thawani expects.
 const computeOrderTotals = (cart, { taxPrice, shippingPrice, wrappingPrice } = {}) => {
     const subtotal = omrSubtotalOf(cart);
     const tax = nonNegative(taxPrice);
@@ -166,7 +174,7 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
     const deliveryMethod = req.body.deliveryMethod === 'pickup' ? 'pickup' : 'delivery';
     const { total, taxPrice, shippingPrice, wrappingPrice } = computeOrderTotals(cart, {
         taxPrice: req.body.taxPrice,
-        shippingPrice: req.body.shippingPrice,
+        shippingPrice: await shippingPriceFor(deliveryMethod),
         wrappingPrice: req.body.wrappingPrice,
     });
 
@@ -216,7 +224,7 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
     const { total: omrTotal, totalBaisa: omrBaisa, taxPrice, shippingPrice, wrappingPrice } =
         computeOrderTotals(cart, {
             taxPrice: req.body.taxPrice,
-            shippingPrice: req.body.shippingPrice,
+            shippingPrice: await shippingPriceFor(deliveryMethod),
             wrappingPrice: req.body.wrappingPrice,
         });
     // Thawani's minimum payable amount is 100 baisa (0.100 OMR).

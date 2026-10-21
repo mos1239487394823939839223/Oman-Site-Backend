@@ -137,6 +137,15 @@ const footerSchema = new mongoose.Schema(
 
     // ── Editable quick links ─────────────────────────────────────────
     links: { type: [quickLinkSchema], default: [] },
+
+    // ── Store settings ───────────────────────────────────────────────
+    // Home-delivery fee in OMR. Charged server-side on every delivery order
+    // (pickup is free).
+    deliveryPrice: {
+        type: Number,
+        min: [0, "Delivery price cannot be negative"],
+        default: 2
+    },
   },
   { timestamps: true }
 );

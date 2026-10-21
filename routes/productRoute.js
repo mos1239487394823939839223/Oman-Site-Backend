@@ -9,6 +9,7 @@ const {
 	updateProduct,
 	deleteProduct,
 	applySubCategoryDiscount,
+	applyProductDiscount,
 	uploadProductImages,
 	resizeProductImages,
 	parseProductPrices
@@ -32,6 +33,15 @@ router.put(
 	authService.protect,
 	authService.allowedTo(['admin', 'manager']),
 	applySubCategoryDiscount
+);
+
+// Apply / clear a percentage discount for a single product.
+router.put(
+	'/:id/discount',
+	authService.protect,
+	authService.allowedTo(['admin', 'manager']),
+	getProductByIdValidator,
+	applyProductDiscount
 );
 
 

@@ -134,6 +134,12 @@ exports.updateFooterValidator = [
     .isBoolean()
     .withMessage("Link isActive must be a boolean"),
 
+  // ── Store settings ────────────────────────────────────────────────
+  check("deliveryPrice")
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage("Delivery price must be a number of 0 or more"),
+
   validatorMiddleware,
 ];
 

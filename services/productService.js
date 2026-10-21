@@ -240,20 +240,9 @@ const updateProduct = factory.updateOne(ProductModel);
 
 const deleteProduct =factory.deleteOne(ProductModel);
 
-// @desc   Apply (or clear) a percentage discount to every product in a subcategory
-// @route  PUT /api/v1/products/discount/subcategory/:subCategoryId
-// @access Private/Admin-Manager
-// Body: { discountPercent: 0..100 }. 0 clears the discount. The percentage is
-// applied to the base OMR price AND every per-currency amount, in a single bulk
-// update (aggregation pipeline) so it scales to any number of products.
-const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
-    const { subCategoryId } = req.params;
-    const discountPercent = Number(req.body.discountPercent);
-
-    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent >= 100) {
-        return next(new ApiError('discountPercent must be a number between 0 and 99', 400));
-    }
-
+// Aggregation-pipeline $set that applies (or, at 0, clears) a percentage
+// discount to the base OMR price AND every per-currency amount.
+const discountStage = (discountPercent) => {
     const factor = (100 - discountPercent) / 100;
     const clearing = discountPercent === 0;
 
@@ -274,27 +263,79 @@ const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
         },
     };
 
-    const setStage = {
-        priceAfterDiscount: clearing
-            ? '$$REMOVE'
-            : { $round: [{ $multiply: ['$price', factor] }, 3] },
-        prices: mappedPrices,
+    return {
+        $set: {
+            priceAfterDiscount: clearing
+                ? '$$REMOVE'
+                : { $round: [{ $multiply: ['$price', factor] }, 3] },
+            prices: mappedPrices,
+        },
     };
+};
+
+// Validates req.body.discountPercent (0..99); returns the number or null.
+const parseDiscountPercent = (body) => {
+    const discountPercent = Number(body.discountPercent);
+    if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent >= 100) {
+        return null;
+    }
+    return discountPercent;
+};
+
+// @desc   Apply (or clear) a percentage discount to every product in a subcategory
+// @route  PUT /api/v1/products/discount/subcategory/:subCategoryId
+// @access Private/Admin-Manager
+// Body: { discountPercent: 0..99 }. 0 clears the discount. Single bulk update,
+// so it scales to any number of products.
+const applySubCategoryDiscount = asynchandler(async (req, res, next) => {
+    const { subCategoryId } = req.params;
+    const discountPercent = parseDiscountPercent(req.body);
+    if (discountPercent === null) {
+        return next(new ApiError('discountPercent must be a number between 0 and 99', 400));
+    }
 
     const result = await ProductModel.updateMany(
         { subCategories: subCategoryId },
-        [{ $set: setStage }],
+        [discountStage(discountPercent)],
         // Mongoose 9 requires this flag to accept an aggregation-pipeline update.
         { updatePipeline: true }
     );
 
     res.status(200).json({
         success: true,
-        message: clearing
+        message: discountPercent === 0
             ? 'Discount cleared for the subcategory'
             : `${discountPercent}% discount applied to the subcategory`,
         matched: result.matchedCount,
         modified: result.modifiedCount,
+    });
+});
+
+// @desc   Apply (or clear) a percentage discount to a single product
+// @route  PUT /api/v1/products/:id/discount
+// @access Private/Admin-Manager
+// Body: { discountPercent: 0..99 }. 0 clears the discount.
+const applyProductDiscount = asynchandler(async (req, res, next) => {
+    const discountPercent = parseDiscountPercent(req.body);
+    if (discountPercent === null) {
+        return next(new ApiError('discountPercent must be a number between 0 and 99', 400));
+    }
+
+    const product = await ProductModel.findByIdAndUpdate(
+        req.params.id,
+        [discountStage(discountPercent)],
+        { returnDocument: 'after', updatePipeline: true }
+    );
+    if (!product) {
+        return next(new ApiError(`No product for this id ${req.params.id}`, 404));
+    }
+
+    res.status(200).json({
+        success: true,
+        message: discountPercent === 0
+            ? 'Discount cleared for the product'
+            : `${discountPercent}% discount applied to the product`,
+        data: product,
     });
 });
 
@@ -306,6 +347,7 @@ module.exports = {
     updateProduct,
     deleteProduct,
     applySubCategoryDiscount,
+    applyProductDiscount,
     uploadProductImages,
     resizeProductImages,
     parseProductPrices
