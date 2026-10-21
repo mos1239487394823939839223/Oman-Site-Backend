@@ -19,6 +19,9 @@ dbConnection();
 
 const port = process.env.PORT || 8000;
 const app = express();
+// Behind nginx: trust its X-Forwarded-* headers so req.ip / req.protocol are
+// the client's, not the proxy's.
+app.set('trust proxy', 1);
 
 app.use(compression());
 app.use(cors({

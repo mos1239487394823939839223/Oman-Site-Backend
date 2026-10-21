@@ -41,7 +41,13 @@ const buildUserUpdateData = (body) => {
 // @access Private/Admin
 
 
-const createUser =factory.createOne(UserModel);
+const createUser = asynchandler(async (req, res, next) => {
+    // Managers may create customers only; only an admin can create staff.
+    if (req.body.role && req.body.role !== 'user' && req.user.role !== 'admin') {
+        return next(new ApiError('Only an admin can create admin or manager accounts', 403));
+    }
+    return factory.createOne(UserModel)(req, res, next);
+});
 
 // @desc Get all users
 // @route GET /api/v1/users
@@ -67,6 +73,9 @@ const updateUser = asynchandler(async (req,res,next)=>{
     // buildUserUpdateData helper, which also serves updateMyData — otherwise a
     // regular user could escalate their own role.
     if (req.body.role !== undefined) {
+        if (req.user.role !== 'admin') {
+            return next(new ApiError('Only an admin can change user roles', 403));
+        }
         updateData.role = req.body.role;
     }
     const document = await UserModel.findByIdAndUpdate(
@@ -138,7 +147,8 @@ const updateLoggedUserPassword = asynchandler(async(req,res,next)=>{
     if(!isMatch){
         return next(new ApiError('Current password is incorrect', 400));
     }
-    user.password = bcrypt.hashSync(req.body.newPassword, 10);
+    // Plain text here — the model's pre-save hook hashes it.
+    user.password = req.body.newPassword;
     user.passwordChangedAt = Date.now();
     await user.save();
     const token = generateToken(user._id);

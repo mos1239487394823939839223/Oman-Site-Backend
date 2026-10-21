@@ -37,6 +37,8 @@ router.post(
 // Upload image to existing banner
 router.post(
   "/:id/image",
+  authService.protect,
+  authService.allowedTo(['admin','manager']),
   getBannerValidator,
   uploadBannerImages,
   resizeBannerImages,

@@ -108,6 +108,17 @@ userSchema.methods.changedPasswordAfter = function (JWTTimestamp) {
     return false;
 };
 
+// Strip secrets from every JSON response (login, signup, getMe, user lists).
+userSchema.set('toJSON', {
+    transform: (doc, ret) => {
+        delete ret.password;
+        delete ret.passwordResetCode;
+        delete ret.passwordResetExpires;
+        delete ret.passwordResetVerified;
+        return ret;
+    }
+});
+
 const userModel = mongoose.model('User',userSchema);
 
 module.exports = userModel;

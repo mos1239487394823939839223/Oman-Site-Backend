@@ -26,6 +26,10 @@ const orderSchema = new mongoose.Schema({
     ],
 
     shippingAddress:{
+        // The checkout sends the street address as `details` and the
+        // recipient as `name`; `address` is kept for older orders.
+        details:{type: String},
+        name:{type: String},
         address:{type: String},
         phone:{type: String},
         city:{type: String},

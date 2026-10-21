@@ -45,6 +45,23 @@ const redeemCoupon = async (couponId, userId) => {
     );
 };
 
+// Refuse to place an order for more units than are in stock. Returns an error
+// message naming the first short item, or null when everything is available.
+const findStockShortage = async (cartItems) => {
+    for (const item of cartItems) {
+        const Model = item.product ? Product : item.gift ? Gift : null;
+        if (!Model) continue;
+        const doc = await Model.findById(item.product || item.gift).select('title quantity').lean();
+        if (!doc) return 'An item in your cart is no longer available';
+        if (typeof doc.quantity === 'number' && doc.quantity < (item.quantity || 1)) {
+            return doc.quantity > 0
+                ? `Only ${doc.quantity} left of "${doc.title}"`
+                : `"${doc.title}" is out of stock`;
+        }
+    }
+    return null;
+};
+
 // Create the order from a cart and run all the side effects: decrement stock,
 // redeem the coupon, notify admins, and clear the cart. Shared by the cash and
 // Thawani (card) flows so they stay in lockstep.
@@ -169,9 +186,16 @@ exports.filterOrderForLoggedUser = asyncHandler(async (req, res, next) => {
 
 exports.createCashOrder = asyncHandler(async (req, res, next) => {
     // 1) Get Cart based on cartId
-    const cart = await Cart.findById(req.params.cartId);
+    const cart = await Cart.findOne({ _id: req.params.cartId, user: req.user._id });
     if(!cart){
         return next(new ApiError("There is no cart for this id",404));
+    }
+    if (!cart.cartItems || cart.cartItems.length === 0) {
+        return next(new ApiError('Cart is empty', 400));
+    }
+    const shortage = await findStockShortage(cart.cartItems);
+    if (shortage) {
+        return next(new ApiError(shortage, 400));
     }
 
     // 2) Order total = product subtotal (post-coupon) + the fees the client shows
@@ -214,13 +238,17 @@ exports.createCashOrder = asyncHandler(async (req, res, next) => {
 // with the data needed to place the order once payment is confirmed, and returns
 // the hosted pay URL the client should redirect to.
 exports.createThawaniSession = asyncHandler(async (req, res, next) => {
-    const cart = await Cart.findById(req.params.cartId)
+    const cart = await Cart.findOne({ _id: req.params.cartId, user: req.user._id })
         .populate('cartItems.product', 'title price priceAfterDiscount prices');
     if (!cart) {
         return next(new ApiError('There is no cart for this id', 404));
     }
     if (!cart.cartItems || cart.cartItems.length === 0) {
         return next(new ApiError('Cart is empty', 400));
+    }
+    const shortage = await findStockShortage(cart.cartItems);
+    if (shortage) {
+        return next(new ApiError(shortage, 400));
     }
 
     // Charge the full order total — product subtotal + the fees the client shows
@@ -274,6 +302,17 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
                 shippingPrice,
                 wrappingPrice,
                 deliveryMethod,
+                // Exactly what was paid for. The order is built from this, not
+                // from the live cart, which the customer could change before
+                // confirming.
+                cartItems: cart.cartItems.map((item) => ({
+                    product: item.product ? item.product._id : undefined,
+                    gift: item.gift || undefined,
+                    quantity: item.quantity,
+                    price: item.price,
+                    color: item.color,
+                })),
+                couponId: cart.coupon ? String(cart.coupon) : undefined,
             },
             created_at: session.created_at ? new Date(session.created_at) : new Date(),
             expire_at: session.expire_at ? new Date(session.expire_at) : undefined,
@@ -296,63 +335,97 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
 // (idempotent on repeat calls / refreshes).
 exports.confirmThawaniPayment = asyncHandler(async (req, res, next) => {
     const { session_id: sessionId, ref } = req.body;
+    const userId = String(req.user._id);
 
-    const checkout = sessionId
-        ? await Checkout.findOne({ session_id: sessionId })
-        : await Checkout.findOne({ client_reference_id: ref }).sort({ createdAt: -1 });
-    if (!checkout) {
+    // The buyer's checkouts for this session / cart, newest first. A customer
+    // can open the payment page more than once, so for a cart ref we look
+    // through the recent sessions for the one that was actually paid.
+    const candidates = sessionId
+        ? await Checkout.find({ session_id: sessionId })
+        : await Checkout.find({ client_reference_id: ref }).sort({ createdAt: -1 }).limit(5);
+    const mine = candidates.filter((c) => !c.metadata?.userId || String(c.metadata.userId) === userId);
+    if (candidates.length === 0) {
         return next(new ApiError('Checkout session not found', 404));
     }
-
-    const meta = checkout.metadata || {};
-    // Only the buyer may confirm their own checkout.
-    if (meta.userId && String(meta.userId) !== String(req.user._id)) {
+    if (mine.length === 0) {
         return next(new ApiError('You are not allowed to confirm this payment', 403));
     }
 
-    // Idempotency: if we already placed the order for this checkout, return it.
-    if (meta.orderId) {
-        const existing = await Order.findById(meta.orderId);
-        if (existing) {
-            return res.status(200).json({ status: 'success', paid: true, data: existing });
+    let checkout = null;
+    for (const c of mine) {
+        // Idempotency: if we already placed the order for this checkout, return it.
+        if (c.metadata?.orderId) {
+            const existing = await Order.findById(c.metadata.orderId);
+            if (existing) {
+                return res.status(200).json({ status: 'success', paid: true, data: existing });
+            }
+        }
+        // Verify the real status with Thawani.
+        const session = await thawaniService.getCheckoutSession(c.session_id);
+        c.payment_status = session.payment_status || c.payment_status;
+        if (session.invoice) c.invoice = session.invoice;
+        await c.save();
+        if (c.payment_status === 'paid') {
+            checkout = c;
+            break;
         }
     }
 
-    // Verify the real status with Thawani.
-    const session = await thawaniService.getCheckoutSession(checkout.session_id);
-    checkout.payment_status = session.payment_status || checkout.payment_status;
-    if (session.invoice) checkout.invoice = session.invoice;
-
-    if (checkout.payment_status !== 'paid') {
-        await checkout.save();
-        return res.status(200).json({ status: 'success', paid: false, payment_status: checkout.payment_status });
+    if (!checkout) {
+        return res.status(200).json({ status: 'success', paid: false, payment_status: mine[0].payment_status });
     }
 
-    // Paid. Load the cart and place the order (in OMR — what was actually charged).
-    const cart = await Cart.findById(checkout.client_reference_id);
-    if (!cart) {
-        // Cart already consumed (e.g. a double confirm that raced) — report paid.
-        await checkout.save();
+    // Claim this checkout so two confirms racing (double click, refresh) can't
+    // both place an order.
+    const claimed = await Checkout.findOneAndUpdate(
+        { _id: checkout._id, 'metadata.placing': { $ne: true }, 'metadata.orderId': { $exists: false } },
+        { $set: { 'metadata.placing': true } },
+        { returnDocument: 'after' }
+    );
+    if (!claimed) {
         return res.status(200).json({ status: 'success', paid: true, data: null, message: 'Payment received' });
     }
 
-    const order = await placeOrderFromCart({
-        cart,
-        userId: meta.userId || req.user._id,
-        shippingAddress: meta.shippingAddress || {},
-        paymentMethod: 'card',
-        isPaid: true,
-        totalOrderPrice: typeof meta.omrTotal === 'number' ? meta.omrTotal : (checkout.total_amount / 1000),
-        currency: BASE_CURRENCY,
-        taxPrice: meta.taxPrice || 0,
-        shippingPrice: meta.shippingPrice || 0,
-        wrappingPrice: meta.wrappingPrice || 0,
-        deliveryMethod: meta.deliveryMethod || 'delivery',
-    });
+    const meta = claimed.metadata || {};
 
-    checkout.metadata = { ...meta, orderId: String(order._id) };
-    checkout.markModified('metadata');
-    await checkout.save();
+    // Build the order from what was paid for (snapshot taken when the payment
+    // started). Sessions created before the snapshot existed fall back to the
+    // live cart.
+    let cart;
+    if (Array.isArray(meta.cartItems) && meta.cartItems.length > 0) {
+        cart = { _id: claimed.client_reference_id, cartItems: meta.cartItems, coupon: meta.couponId };
+    } else {
+        cart = await Cart.findById(claimed.client_reference_id);
+        if (!cart) {
+            return res.status(200).json({ status: 'success', paid: true, data: null, message: 'Payment received' });
+        }
+    }
+
+    let order;
+    try {
+        order = await placeOrderFromCart({
+            cart,
+            userId: meta.userId || req.user._id,
+            shippingAddress: meta.shippingAddress || {},
+            paymentMethod: 'card',
+            isPaid: true,
+            totalOrderPrice: typeof meta.omrTotal === 'number' ? meta.omrTotal : (claimed.total_amount / 1000),
+            currency: BASE_CURRENCY,
+            taxPrice: meta.taxPrice || 0,
+            shippingPrice: meta.shippingPrice || 0,
+            wrappingPrice: meta.wrappingPrice || 0,
+            deliveryMethod: meta.deliveryMethod || 'delivery',
+        });
+    } catch (err) {
+        // Release the claim so the customer can retry the confirmation.
+        await Checkout.updateOne({ _id: claimed._id }, { $unset: { 'metadata.placing': '' } });
+        throw err;
+    }
+
+    await Checkout.updateOne(
+        { _id: claimed._id },
+        { $set: { 'metadata.orderId': String(order._id) }, $unset: { 'metadata.placing': '' } }
+    );
 
     res.status(200).json({ status: 'success', paid: true, data: order });
 });
@@ -369,7 +442,15 @@ exports.getAllOrders = factory.getAll(Order);
 // @route GET /api/v1/orders/:id
 // @ access Private/User-admin-manager
 
-exports.getSpecificOrder = factory.getOne(Order);
+exports.getSpecificOrder = asyncHandler(async (req, res, next) => {
+    const order = await Order.findById(req.params.id);
+    // Customers only see their own orders; a 404 avoids revealing that the id exists.
+    const ownerId = order && (order.user?._id || order.user);
+    if (!order || (req.user.role === 'user' && String(ownerId) !== String(req.user._id))) {
+        return next(new ApiError('There is no order for this id', 404));
+    }
+    res.status(200).json({ sucess: true, data: order });
+});
 
 // @desc Get available order statuses (for admin dropdown)
 // @route GET /api/v1/orders/statuses
@@ -443,7 +524,7 @@ exports.updateOrderToDelivered = asyncHandler(async (req, res, next) => {
 exports.CheckoutSession = asyncHandler(async (req, res, next) => {
     
     // 1) Get Cart based on cartId
-    const cart = await Cart.findById(req.params.cartId)
+    const cart = await Cart.findOne({ _id: req.params.cartId, user: req.user._id })
         .populate('cartItems.product', 'title imageCover')
         .populate('cartItems.gift', 'title imageCover');
     if(!cart){

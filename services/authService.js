@@ -194,8 +194,8 @@ exports.resetPassword = asynchandler(async (req, res, next) => {
         throw new apiError('There is no user with that email address.', 404);
     }
 
-    if (!user.passwordResetVerified) {
-        throw new apiError('Reset code has not been verified.', 400);
+    if (!user.passwordResetVerified || !user.passwordResetExpires || user.passwordResetExpires < Date.now()) {
+        throw new apiError('Reset code has not been verified or has expired.', 400);
     }
 
     user.password = req.body.newPassword;
