@@ -9,6 +9,7 @@ const {
     clearCart,
     updateCartItemQuantity,
     applyCoupon,
+    removeCoupon,
     setCartCurrency
 } = require('../services/cartService');
 const {
@@ -28,6 +29,7 @@ router
 
 // applyCoupon / currency must be defined before /:itemId to avoid route conflict
 router.put('/applyCoupon', applyCouponValidator, applyCoupon);
+router.delete('/coupon', removeCoupon);
 router.put('/currency', setCartCurrency);
 
 router

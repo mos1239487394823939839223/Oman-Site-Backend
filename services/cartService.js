@@ -12,16 +12,102 @@ const unitPriceForCurrency = (product, currency) => {
     return typeof amountAfterDiscount === 'number' ? amountAfterDiscount : amount;
 };
 
+// 3 decimals: OMR has 3 (e.g. 0.105); 2-decimal currencies are unaffected.
+const round = (n) => parseFloat(n.toFixed(3));
+
+const PRODUCT_FIELDS = 'title imageCover price priceAfterDiscount prices description category';
+const GIFT_FIELDS = 'title imageCover price priceAfterDiscount description';
+
+/** Why a coupon can't be used by this user right now, or null if it can. */
+const couponProblem = (coupon, userId) => {
+    if (!coupon.expire || coupon.expire <= Date.now()) return 'Invalid or expired coupon code';
+    if ((coupon.usedBy || []).some((id) => id.toString() === userId.toString())) {
+        return 'You have already used this coupon';
+    }
+    if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) {
+        return 'This coupon has reached its usage limit';
+    }
+    return null;
+};
+
+/** Whether a cart line falls within a coupon's product/category scope. */
+const lineMatchesCoupon = (coupon, item) => {
+    if (coupon.product) {
+        return Boolean(item.product) && item.product._id.toString() === coupon.product.toString();
+    }
+    if (coupon.category) {
+        const category = item.product && item.product.category;
+        if (!category) return false;
+        // category may be populated ({ _id, name }) or a raw ObjectId.
+        const categoryId = category._id ? category._id.toString() : category.toString();
+        return categoryId === coupon.category.toString();
+    }
+    return true; // cart-wide
+};
+
 /**
- * Recalculates totalCartPrice from cartItems and clears any applied discount.
+ * Re-price every line from the current product prices in the cart's currency
+ * and (re)apply the cart's coupon. Called after every cart change so totals,
+ * scoped line discounts and the coupon never go stale; a coupon that is no
+ * longer usable is dropped. Leaves products, gifts and the coupon populated.
  */
-const calcTotalCartPrice = (cart) => {
-    let total = 0;
+const repriceCart = async (cart, userId) => {
+    await cart.populate([
+        { path: 'cartItems.product', select: PRODUCT_FIELDS },
+        { path: 'cartItems.gift', select: GIFT_FIELDS },
+        { path: 'coupon' },
+    ]);
+
+    // Drop lines whose product/gift has since been deleted.
+    cart.cartItems = cart.cartItems.filter((item) => item.product || item.gift);
+
+    let coupon = cart.coupon;
+    if (coupon && couponProblem(coupon, userId)) {
+        cart.coupon = null;
+        coupon = null;
+    }
+
+    // Multiplier applied to a unit price, e.g. 20% off -> 0.8
+    const factor = coupon ? (100 - coupon.discount) / 100 : 1;
+    const isScoped = Boolean(coupon && (coupon.product || coupon.category));
+
+    let originalTotal = 0;
     cart.cartItems.forEach((item) => {
-        total += item.quantity * item.price;
+        // Gifts are free; products are priced fresh so discounts never stack.
+        const base = item.product ? unitPriceForCurrency(item.product, cart.currency) : item.price;
+        item.price = isScoped && lineMatchesCoupon(coupon, item) ? round(base * factor) : base;
+        originalTotal += item.quantity * base;
     });
-    cart.totalCartPrice = parseFloat(total.toFixed(2));
-    cart.totalPriceAfterDiscount = undefined;
+
+    cart.totalCartPrice = round(originalTotal);
+    if (!coupon) {
+        cart.totalPriceAfterDiscount = undefined;
+    } else if (isScoped) {
+        // Discounted total = sum of the (possibly discounted) line prices.
+        cart.totalPriceAfterDiscount = round(
+            cart.cartItems.reduce((sum, item) => sum + item.quantity * item.price, 0)
+        );
+    } else {
+        // Cart-wide coupon: discount the whole cart, line prices unchanged.
+        cart.totalPriceAfterDiscount = round(originalTotal * factor);
+    }
+};
+
+/** Re-price, save, and send the cart in the shape every cart endpoint uses. */
+const sendCart = async (cart, req, res, extra = {}) => {
+    await repriceCart(cart, req.user._id);
+    await cart.save();
+    // Only the coupon summary goes to the client, not who else redeemed it.
+    const data = cart.toJSON();
+    data.coupon = cart.coupon
+        ? { _id: cart.coupon._id, name: cart.coupon.name, discount: cart.coupon.discount, product: cart.coupon.product, category: cart.coupon.category }
+        : null;
+    res.status(200).json({
+        success: true,
+        ...extra,
+        numOfCartItems: cart.cartItems.length,
+        data
+    });
 };
 
 const emptyCartPayload = (userId) => ({
@@ -88,24 +174,14 @@ exports.addProductToCart = asyncHandler(async (req, res, next) => {
         }
     }
 
-    calcTotalCartPrice(cart);
-    await cart.save();
-
-    res.status(200).json({
-        success: true,
-        message,
-        numOfCartItems: cart.cartItems.length,
-        data: cart
-    });
+    await sendCart(cart, req, res, { message });
 });
 
 // @desc    Get logged user cart
 // @route   GET /api/v1/cart
 // @access  Protected/User
 exports.getLoggedUserCart = asyncHandler(async (req, res, next) => {
-    const cart = await CartModel.findOne({ user: req.user._id })
-        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount prices description' })
-        .populate({ path: 'cartItems.gift', select: 'title imageCover price priceAfterDiscount description' });
+    const cart = await CartModel.findOne({ user: req.user._id });
 
     if (!cart) {
         return res.status(200).json({
@@ -115,11 +191,7 @@ exports.getLoggedUserCart = asyncHandler(async (req, res, next) => {
         });
     }
 
-    res.status(200).json({
-        success: true,
-        numOfCartItems: cart.cartItems.length,
-        data: cart
-    });
+    await sendCart(cart, req, res);
 });
 
 // @desc    Remove specific cart item
@@ -140,14 +212,7 @@ exports.removeSpecificCartItem = asyncHandler(async (req, res, next) => {
         });
     }
 
-    calcTotalCartPrice(cart);
-    await cart.save();
-
-    res.status(200).json({
-        success: true,
-        numOfCartItems: cart.cartItems.length,
-        data: cart
-    });
+    await sendCart(cart, req, res);
 });
 
 // @desc    Clear logged user cart
@@ -182,14 +247,7 @@ exports.updateCartItemQuantity = asyncHandler(async (req, res, next) => {
     }
 
     cart.cartItems[itemIndex].quantity = quantity;
-    calcTotalCartPrice(cart);
-    await cart.save();
-
-    res.status(200).json({
-        success: true,
-        numOfCartItems: cart.cartItems.length,
-        data: cart
-    });
+    await sendCart(cart, req, res);
 });
 
 // @desc    Switch the cart's currency and re-resolve every line
@@ -201,10 +259,7 @@ exports.setCartCurrency = asyncHandler(async (req, res, next) => {
         return next(new ApiError('Unsupported currency', 400));
     }
 
-    const cart = await CartModel.findOne({ user: req.user._id }).populate({
-        path: 'cartItems.product',
-        select: 'title imageCover price priceAfterDiscount prices description'
-    });
+    const cart = await CartModel.findOne({ user: req.user._id });
 
     if (!cart) {
         return res.status(200).json({
@@ -214,111 +269,32 @@ exports.setCartCurrency = asyncHandler(async (req, res, next) => {
         });
     }
 
+    // sendCart re-prices every line in the new currency; gifts stay free.
     cart.currency = currency;
-    // Re-snapshot each product line in the new currency; gifts stay free.
-    cart.cartItems.forEach((item) => {
-        if (item.product) {
-            item.price = unitPriceForCurrency(item.product, currency);
-        }
-    });
-
-    calcTotalCartPrice(cart);
-    await cart.save();
-
-    res.status(200).json({
-        success: true,
-        numOfCartItems: cart.cartItems.length,
-        data: cart
-    });
+    await sendCart(cart, req, res);
 });
 
 // @desc    Apply coupon to logged user cart
 // @route   PUT /api/v1/cart/applyCoupon
 // @access  Protected/User
 exports.applyCoupon = asyncHandler(async (req, res, next) => {
-    const coupon = await CouponModel.findOne({
-        name: req.body.coupon.toUpperCase(),
-        expire: { $gt: Date.now() }
-    });
-
+    const coupon = await CouponModel.findOne({ name: req.body.coupon.toUpperCase() });
     if (!coupon) {
         return next(new ApiError('Invalid or expired coupon code', 400));
     }
-
-    // Usage limits: block if this user already redeemed it, or if the overall
-    // redemption cap (number of people) has been reached.
-    if (coupon.usedBy.some((id) => id.toString() === req.user._id.toString())) {
-        return next(new ApiError('You have already used this coupon', 400));
-    }
-    if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) {
-        return next(new ApiError('This coupon has reached its usage limit', 400));
+    const problem = couponProblem(coupon, req.user._id);
+    if (problem) {
+        return next(new ApiError(problem, 400));
     }
 
-    const cart = await CartModel.findOne({ user: req.user._id })
-        .populate({ path: 'cartItems.product', select: 'title imageCover price priceAfterDiscount prices description category' });
-
+    const cart = await CartModel.findOne({ user: req.user._id });
     if (!cart || cart.cartItems.length === 0) {
         return next(new ApiError('Cart is empty', 400));
     }
 
-    // Multiplier applied to a discounted unit price, e.g. 20% off -> 0.8
-    const factor = (100 - coupon.discount) / 100;
-    const isScoped = Boolean(coupon.product || coupon.category);
-
-    // Original (pre-discount) unit price for a line, in the cart's currency.
-    // Gift lines keep their stored price; product lines are recomputed from the
-    // product so re-applying a coupon never stacks on a previously discounted price.
-    const baseUnitPrice = (item) =>
-        item.product ? unitPriceForCurrency(item.product, cart.currency) : item.price;
-
-    // Whether this line falls within the coupon's scope.
-    const lineMatches = (item) => {
-        if (coupon.product) {
-            return Boolean(item.product) && item.product._id.toString() === coupon.product.toString();
-        }
-        if (coupon.category) {
-            const category = item.product && item.product.category;
-            if (!category) return false;
-            // category may be populated ({ _id, name }) or a raw ObjectId.
-            const categoryId = category._id ? category._id.toString() : category.toString();
-            return categoryId === coupon.category.toString();
-        }
-        return true; // cart-wide
-    };
-
-    let originalTotal = 0;
-    cart.cartItems.forEach((item) => {
-        const base = baseUnitPrice(item);
-        // Reset every line to its base price first (idempotent), then discount the
-        // matching lines only when the coupon is scoped to a product/category.
-        item.price = isScoped && lineMatches(item)
-            ? parseFloat((base * factor).toFixed(2))
-            : base;
-        originalTotal += item.quantity * base;
-    });
-
-    cart.totalCartPrice = parseFloat(originalTotal.toFixed(2));
-
-    if (isScoped) {
-        // Discounted total = sum of the (possibly discounted) line prices.
-        const discountedTotal = cart.cartItems.reduce(
-            (sum, item) => sum + item.quantity * item.price,
-            0
-        );
-        cart.totalPriceAfterDiscount = parseFloat(discountedTotal.toFixed(2));
-    } else {
-        // Cart-wide coupon: discount the whole cart, line prices unchanged.
-        cart.totalPriceAfterDiscount = parseFloat((originalTotal * factor).toFixed(2));
-    }
-
     // Remember the applied coupon so order placement can redeem it.
     cart.coupon = coupon._id;
-
-    await cart.save();
-
-    res.status(200).json({
-        success: true,
-        numOfCartItems: cart.cartItems.length,
+    await sendCart(cart, req, res, {
         // Echo the applied coupon (incl. scope) so the client can explain why only
         // some lines changed, e.g. "SAVE20 — applies to Silk Shirt only".
         coupon: {
@@ -326,7 +302,22 @@ exports.applyCoupon = asyncHandler(async (req, res, next) => {
             discount: coupon.discount,
             product: coupon.product,
             category: coupon.category
-        },
-        data: cart
+        }
     });
+});
+
+// @desc    Remove the applied coupon from logged user cart
+// @route   DELETE /api/v1/cart/coupon
+// @access  Protected/User
+exports.removeCoupon = asyncHandler(async (req, res, next) => {
+    const cart = await CartModel.findOne({ user: req.user._id });
+    if (!cart) {
+        return res.status(200).json({
+            success: true,
+            numOfCartItems: 0,
+            data: emptyCartPayload(req.user._id),
+        });
+    }
+    cart.coupon = null;
+    await sendCart(cart, req, res);
 });
