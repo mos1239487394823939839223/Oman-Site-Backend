@@ -111,7 +111,7 @@ exports.updateBanner = asyncHandler(async (req, res, next) => {
   normalizeBannerImages(req);
 
   const banner = await BannerModel.findByIdAndUpdate(id, req.body, {
-    new: true,
+    returnDocument: 'after',
     runValidators: true,
   });
   if (!banner) {
@@ -150,7 +150,7 @@ exports.setBannerImages = asyncHandler(async (req, res, next) => {
   const banner = await BannerModel.findByIdAndUpdate(
     id,
     { images: req.body.images },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!banner) {

@@ -6,7 +6,7 @@ const getOrCreateFooter = () =>
   FooterModel.findOneAndUpdate(
     {},
     { $setOnInsert: {} },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   );
 
 // @desc    Get footer data
@@ -27,7 +27,7 @@ exports.updateFooter = asyncHandler(async (req, res) => {
   const footer = await FooterModel.findOneAndUpdate(
     {},
     { $set: updateData },
-    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', runValidators: true, setDefaultsOnInsert: true }
   );
 
   res.status(200).json({ status: "success", data: footer });

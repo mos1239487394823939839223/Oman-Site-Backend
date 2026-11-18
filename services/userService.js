@@ -81,7 +81,7 @@ const updateUser = asynchandler(async (req,res,next)=>{
     const document = await UserModel.findByIdAndUpdate(
         id,
         updateData,
-        {new:true, runValidators:true}
+        {returnDocument: 'after', runValidators:true}
     );
     if(!document){
         return next(new ApiError('User not found', 404));
@@ -98,7 +98,7 @@ const updateUser = asynchandler(async (req,res,next)=>{
 
 const changeUserPassword = asynchandler(async(req,res,next)=>{
     const id = req.params.id;
-    const document = await UserModel.findByIdAndUpdate(id, {password:bcrypt.hashSync(req.body.password, 10), passwordChangedAt: Date.now()}, {new:true});
+    const document = await UserModel.findByIdAndUpdate(id, {password:bcrypt.hashSync(req.body.password, 10), passwordChangedAt: Date.now()}, {returnDocument: 'after'});
     if(!document){
         return next(new ApiError('User not found', 404));
     }
@@ -165,7 +165,7 @@ const updateLoggedUserData = asynchandler(async(req,res,next)=>{
     //2) update user data (name, email, phone, profileImage)
     //3) send response
     const updateData = buildUserUpdateData(req.body);
-    const user = await UserModel.findByIdAndUpdate(req.user._id, updateData, {new:true});
+    const user = await UserModel.findByIdAndUpdate(req.user._id, updateData, {returnDocument: 'after'});
     if(!user){
         return next(new ApiError('User not found', 404));
     }
@@ -178,7 +178,7 @@ const updateLoggedUserData = asynchandler(async(req,res,next)=>{
 // @route DELETE /api/v1/users/deleteMyAccount
 // @access Private/Protected
 const deleteMyAccount = asynchandler(async(req,res,next)=>{
-    const user = await UserModel.findByIdAndUpdate(req.user._id, {active:false}, {new:true});
+    const user = await UserModel.findByIdAndUpdate(req.user._id, {active:false}, {returnDocument: 'after'});
     if(!user){
         return next(new ApiError('User not found', 404));
     }

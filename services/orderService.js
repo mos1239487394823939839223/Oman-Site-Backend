@@ -317,7 +317,7 @@ exports.createThawaniSession = asyncHandler(async (req, res, next) => {
             created_at: session.created_at ? new Date(session.created_at) : new Date(),
             expire_at: session.expire_at ? new Date(session.expire_at) : undefined,
         },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
 
     res.status(200).json({

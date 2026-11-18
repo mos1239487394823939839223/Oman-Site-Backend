@@ -9,7 +9,7 @@ exports.addAddress = asyncHandler(async (req, res, next) => {
     const user = await UserModel.findByIdAndUpdate(
         req.user._id,
         { $addToSet: { addresses: req.body } },
-        { new: true, runValidators: true }
+        { returnDocument: 'after', runValidators: true }
     );
 
     if (!user) {
@@ -30,7 +30,7 @@ exports.removeAddress = asyncHandler(async (req, res, next) => {
     const user = await UserModel.findByIdAndUpdate(
         req.user._id,
         { $pull: { addresses: { _id: req.params.addressId } } },
-        { new: true }
+        { returnDocument: 'after' }
     );
 
     if (!user) {

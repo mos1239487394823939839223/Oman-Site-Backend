@@ -201,7 +201,7 @@ exports.removeSpecificCartItem = asyncHandler(async (req, res, next) => {
     const cart = await CartModel.findOneAndUpdate(
         { user: req.user._id },
         { $pull: { cartItems: { _id: req.params.itemId } } },
-        { new: true }
+        { returnDocument: 'after' }
     );
 
     if (!cart) {

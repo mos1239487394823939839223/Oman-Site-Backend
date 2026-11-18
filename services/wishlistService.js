@@ -9,7 +9,7 @@ exports.addProductToWishlist = asyncHandler(async (req, res, next) => {
     const user = await UserModel.findByIdAndUpdate(
         req.user._id,
         { $addToSet: { wishlist: req.body.productId } },
-        { new: true }
+        { returnDocument: 'after' }
     ).populate({ path: 'wishlist', select: 'title imageCover price priceAfterDiscount ratingsAverage' });
 
     if (!user) {
@@ -30,7 +30,7 @@ exports.removeProductFromWishlist = asyncHandler(async (req, res, next) => {
     const user = await UserModel.findByIdAndUpdate(
         req.user._id,
         { $pull: { wishlist: req.params.productId } },
-        { new: true }
+        { returnDocument: 'after' }
     ).populate({ path: 'wishlist', select: 'title imageCover price priceAfterDiscount ratingsAverage' });
 
     if (!user) {

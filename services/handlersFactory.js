@@ -17,7 +17,7 @@ exports.deleteOne = (Model) => {
 exports.inactiveOne = (Model) => {
     return asyncHandler(async(req,res,next)=>{
     const {id}= req.params;
-    const document = await Model.findByIdAndUpdate(id, { active:  false}, { new: false });
+    const document = await Model.findByIdAndUpdate(id, { active:  false}, { returnDocument: 'before' });
     if(!document){
         return next(new ApiError('Document not found', 404));
     }
